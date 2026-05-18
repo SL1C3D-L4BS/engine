@@ -1,0 +1,45 @@
+# [ENGINE] platform — workspace root
+# See ENGINE_SPECIFICATION_v2.0.md Part IV.1
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/*",
+    "testbed/engine-raster",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# --- engine crates (path deps; levels 0-4 per Part IV.1) ---
+engine-math = { path = "crates/engine-math" }
+engine-platform = { path = "crates/engine-platform" }
+engine-reflect = { path = "crates/engine-reflect" }
+engine-ecs-macro = { path = "crates/engine-ecs-macro" }
+engine-core = { path = "crates/engine-core" }
+engine-asset = { path = "crates/engine-asset" }
+engine-telemetry = { path = "crates/engine-telemetry" }
+engine-i18n = { path = "crates/engine-i18n" }
+engine-render = { path = "crates/engine-render" }
+engine-physics = { path = "crates/engine-physics" }
+engine-audio = { path = "crates/engine-audio" }
+engine-net = { path = "crates/engine-net" }
+engine-script = { path = "crates/engine-script" }
+engine-ai = { path = "crates/engine-ai" }
+engine-editor = { path = "crates/engine-editor" }
+engine-hub-core = { path = "crates/engine-hub-core" }
+engine-ui = { path = "crates/engine-ui" }
+engine-api = { path = "crates/engine-api" }
+engine-plugin-api = { path = "crates/engine-plugin-api" }
+
+# --- third-party deps are added here as phases require them ---
+
+# Determinism Contract (ADR-013): the simulation path is built with the
+# `sim` profile. The no-FMA codegen flag is applied via the build invocation
+# (RUSTFLAGS="-C target-feature=-fma") until the sim crates are split out.
+[profile.sim]
+inherits = "release"

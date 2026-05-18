@@ -1,0 +1,17 @@
+# [ENGINE] platform — manifest
+# See ENGINE_SPECIFICATION_v2.0.md Part IV.1
+
+[platform]
+spec_version = "2.0"
+phase = "0"
+
+[determinism]
+# Determinism Contract — spec IV.2 / ADR-013.
+math_profile = "strict-ieee-754"
+fma_on_sim_path = false
+
+[telemetry]
+# Editor telemetry is opt-in (ADR-020); no metrics leave the device
+# until consent is recorded.
+consent = "opt-in"
+metrics_port = 9091
