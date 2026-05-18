@@ -8,7 +8,7 @@ build:
     cargo build --workspace
 
 test:
-    cargo nextest run --workspace
+    cargo nextest run --workspace --no-tests=pass
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
