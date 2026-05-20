@@ -339,6 +339,7 @@ dependencies = [
  "blake3",
  "criterion",
  "engine-ecs-macro",
+ "engine-platform",
  "engine-reflect",
 ]
 

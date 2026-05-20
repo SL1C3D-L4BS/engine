@@ -10,6 +10,9 @@ engine-ecs-macro = { workspace = true }
 # `Component::STABLE_ID` (ADR-031) lives in the reflection crate so scene
 # loaders and the ECS archetype index see the same `TypeStableId` definition.
 engine-reflect = { workspace = true }
+# The Phase 3 parallel scheduler (ADR-033) dispatches systems through the
+# owned thread pool / JobGraph that lives in engine-platform.
+engine-platform = { workspace = true }
 blake3 = "1"
 
 [dev-dependencies]
@@ -21,6 +24,10 @@ harness = false
 
 [[bench]]
 name = "collections"
+harness = false
+
+[[bench]]
+name = "million_entities"
 harness = false
 
 [lints]

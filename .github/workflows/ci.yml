@@ -79,6 +79,7 @@ jobs:
           hits=$(grep -rnE 'std::thread::spawn|std::sync::Mutex|std::sync::RwLock|std::sync::mpsc' crates \
               | grep -v -e 'crates/engine-platform/src/thread_pool.rs' \
                        -e 'crates/engine-platform/src/sampler.rs' \
+                       -e 'crates/engine-core/src/ecs/schedule.rs' \
                        -e '/tests/' -e '/benches/' \
                        -e 'crates/engine-ecs-macro/' \
               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
@@ -215,3 +216,11 @@ jobs:
 
       - name: engine-core determinism oracle
         run: cargo test -p engine-core --test determinism
+
+      - name: engine-core replay parity oracle (ADR-033)
+        # Cross-worker-count parity: parallel `Schedule::run_on` at
+        # workers {1, 2, 4, N} must produce digests identical to the
+        # single-threaded reference at frames 1, 10, 100. Runs on both
+        # x86-64 and aarch64 — same property the Determinism Contract
+        # demands of the math and golden tests above.
+        run: cargo test -p engine-core --test replay_parity

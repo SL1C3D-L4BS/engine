@@ -100,6 +100,24 @@ jobs-oracle:
 jobs-bench:
     cargo bench -p engine-platform --bench jobs
 
+# Run the engine-core replay-parity oracle (ADR-033): cross-worker-count
+# digest parity. Wired into the CI determinism job on both x86-64 and
+# aarch64.
+replay-parity:
+    cargo test -p engine-core --test replay_parity
+
+# Refresh the 1 M-entity per-frame baseline (ADR-033). Measures the
+# milestone gate (1 M @ 60 FPS single-core) on the developer machine
+# and reports it at 10k / 100k / 1M scales, sequential and parallel.
+# Commit summary medians to `docs/observatory/million-entities-baseline.md`.
+million-entities-baseline:
+    cargo bench -p engine-core --bench million_entities
+
+# Refresh the parallel-schedule speedup curve baseline (ADR-033).
+# Commit summary numbers to `docs/observatory/parallel-schedule-baseline.md`.
+parallel-schedule-baseline:
+    @echo "See docs/observatory/parallel-schedule-baseline.md for the manual harness."
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

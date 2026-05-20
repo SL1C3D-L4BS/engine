@@ -3,12 +3,12 @@
 
 [platform]
 spec_version = "2.0"
-# Phase 3 (ENGINE CORE, spec Part XXI) in progress. PR 1 (ADR-031) lands
-# archetype-SoA storage and the `TypeStableId` cross-arch identifier; PR 2
-# (ADR-032) adds the owned fiber job system in engine-platform; PR 3
-# (ADR-033) closes the phase with the deterministic parallel scheduler, the
-# 1 M-entity benchmark, and the replay-parity oracle. Upper layers (render,
-# physics, audio, net, script, ai, editor, …) remain stubs for Phase 4+.
+# Phase 3 (ENGINE CORE, spec Part XXI) closed: archetype-SoA storage with
+# cross-arch `TypeStableId` (ADR-031), owned fiber job system + work-stealing
+# thread pool (ADR-032), and the deterministic parallel scheduler with the
+# replay-parity oracle and 1 M-entity bench (ADR-033). Engine Core v0.1 is
+# tagged. Upper layers (render, physics, audio, net, script, ai, editor, …)
+# remain stubs for Phase 4+.
 phase = "3"
 
 [determinism]

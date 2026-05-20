@@ -2,7 +2,7 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 2** (LINUX SYSTEMS). The crate
+This repository is the monorepo through **Phase 3** (ENGINE CORE). The crate
 tree, levels, and architecture follow the authoritative specification:
 
 > `~/Resources/documentation/ENGINE_SPECIFICATION_v2.0.md`
@@ -86,6 +86,47 @@ that own the platform surface every later phase will sit on:
   `tools/sampling-profiler/` CLI prints Brendan-Gregg-compatible folded
   stack output. macOS/Windows compile to graceful-degradation stubs.
   Baseline: `docs/observatory/profiler-baseline.md` (ADR-030).
+
+Phase 3 (ENGINE CORE, spec Part XXI) closed the substrate with three
+deliverables that wire the data layer and the compute layer into a
+deterministic parallel scheduler:
+
+- **Archetype ECS.** Table components now live in archetype-grouped
+  columns (one `AnyVec` per component type per archetype) — the
+  Structure-of-Arrays layout the cache-observatory workloads were
+  designed to predict for. The archetype index keys signatures by a
+  cross-architecture-stable `TypeStableId` (BLAKE3 of
+  `crate_name::ident`, emitted as a literal `u64` by
+  `#[derive(Component)]`); `std::any::TypeId` is no longer used for
+  component identity anywhere in the ECS, enforced by a CI grep guard.
+  Oracle: `crates/engine-core/tests/archetype.rs`. Baseline:
+  `docs/observatory/archetype-baseline.md` (ADR-031).
+- **Owned fiber job system.** `engine_platform::ThreadPool` is an owned
+  N-worker pool (one `std::thread::spawn` per worker, allowlisted to
+  one file) with per-worker FIFO deques and a shared injector; idle
+  workers steal from peers before parking on a condvar. The companion
+  `engine_platform::fiber` module ships guarded-stack user-space
+  fibers (naked asm switch for x86-64 + aarch64, `ucontext` fallback)
+  built on a new `MmapAnon` anonymous-mapping primitive.
+  `engine_platform::JobGraph` provides static R/W-DAG dispatch; the
+  R-02 oracle hashes parallel results against the single-threaded
+  reference at worker counts {1, 2, 4, N}. Baseline:
+  `docs/observatory/jobs-baseline.md` (ADR-032).
+- **Deterministic parallel scheduler.**
+  `Schedule::add_system_with_access(phase, name, reads, writes, fn)`
+  registers parallelisable systems with explicit `TypeStableId` R/W
+  sets; `Schedule::run_on(world, pool)` builds one `JobGraph` per
+  phase and dispatches non-conflicting systems through the owned
+  thread pool. The replay-parity oracle
+  (`crates/engine-core/tests/replay_parity.rs`) runs the same workload
+  sequentially and at worker counts {1, 2, 4, N} and asserts identical
+  per-frame BLAKE3 digests — wired into the CI determinism job on
+  both x86-64 and aarch64. Milestone bench
+  (`cargo bench -p engine-core --bench million_entities`) tracks the
+  1 M-entity / 60 FPS single-core target. Baseline:
+  `docs/observatory/million-entities-baseline.md` (ADR-033).
+
+**Engine Core v0.1** is tagged at the close of Phase 3.
 
 The upper layers (render, physics, audio, net, script, ai, editor, …)
 remain stubs and are built across the later phases — see spec Part XXI.
