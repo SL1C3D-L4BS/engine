@@ -19,5 +19,5 @@ pub mod registry;
 pub mod value;
 
 pub use reflect::Reflect;
-pub use registry::{TypeInfo, TypeRegistry};
+pub use registry::{TypeInfo, TypeRegistry, TypeStableId};
 pub use value::{FromReflect, ReflectValue};

@@ -12,6 +12,10 @@ proc-macro = true
 syn = "2"
 quote = "1"
 proc-macro2 = "1"
+# Used at macro-expansion time to compute `TypeStableId` (ADR-031). The hash is
+# emitted as a literal `u64`, so blake3 is a proc-macro build-time dependency
+# only — it does not appear in the engine's runtime dependency graph.
+blake3 = "1"
 
 [lints]
 workspace = true

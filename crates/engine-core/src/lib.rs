@@ -27,7 +27,10 @@ pub mod ecs;
 pub mod rng;
 pub mod telemetry;
 
-pub use ecs::{Entity, Phase, Schedule, StorageKind, World};
+pub use ecs::{
+    ArchetypeId, ArchetypeSignature, Entity, Phase, Query, Schedule, StorageKind, TypeStableId,
+    World,
+};
 pub use rng::Rng;
 
 // The `Component` trait (from `ecs`) and the `#[derive(Component)]` macro

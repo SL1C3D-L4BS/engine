@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 engine-ecs-macro = { workspace = true }
+# `Component::STABLE_ID` (ADR-031) lives in the reflection crate so scene
+# loaders and the ECS archetype index see the same `TypeStableId` definition.
+engine-reflect = { workspace = true }
 blake3 = "1"
 
 [dev-dependencies]

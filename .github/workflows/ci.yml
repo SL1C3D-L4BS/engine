@@ -66,6 +66,25 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against TypeId::of in the ECS source (ADR-031)
+        run: |
+          # The Phase 3 archetype index keys signatures by `TypeStableId`,
+          # never by `std::any::TypeId` (process-private, not cross-arch
+          # stable). The resource map is the single grandfathered TypeId
+          # consumer; its lines are tagged with an inline
+          # `// allow: resources` comment that this grep recognises.
+          # Doc/line-comments (// rustdoc cross-references, // explanatory
+          # text) are stripped before the check too — those don't generate
+          # code.
+          hits=$(grep -rnE 'TypeId::of::<' crates/engine-core/src/ecs \
+              | grep -v 'allow: resources' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Use TypeStableId / Component::STABLE_ID instead of TypeId::of — see ADR-031"
+            exit 1
+          fi
+
       - name: Guard against raw mmap outside engine-platform (ADR-029)
         run: |
           # The mmap syscall is allowed in two files only:

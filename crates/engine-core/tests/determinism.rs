@@ -23,6 +23,54 @@ struct Tag {
     value: u64,
 }
 
+// --- Phase 3 archetype sweep components (ADR-031) -------------------------
+// Six small Table components plus two SparseSet components. The sweep below
+// constructs 64 distinct archetype signatures by picking subsets of the six
+// Table components, exercises insertion edges across them, and folds the
+// resulting `World::query` output into the digest.
+
+#[derive(Component)]
+struct ArchA {
+    a: i32,
+}
+
+#[derive(Component)]
+struct ArchB {
+    b: i32,
+}
+
+#[derive(Component)]
+struct ArchC {
+    c: i32,
+}
+
+#[derive(Component)]
+struct ArchD {
+    d: i32,
+}
+
+#[derive(Component)]
+struct ArchE {
+    e: i32,
+}
+
+#[derive(Component)]
+struct ArchF {
+    f: i32,
+}
+
+#[derive(Component)]
+#[component(storage = "SparseSet")]
+struct ArchTag {
+    t: u32,
+}
+
+#[derive(Component)]
+#[component(storage = "SparseSet")]
+struct ArchMark {
+    m: u32,
+}
+
 struct Digest {
     hash: u64,
 }
@@ -101,6 +149,92 @@ fn compute() -> u64 {
         d.u64(e.to_bits());
         d.u64(t.value);
     });
+
+    // --- ECS: 64 distinct archetypes, mixed Table + SparseSet (ADR-031) -
+    // Each entity's Table-component set is the lower 6 bits of its index;
+    // SparseSet components are sprinkled by separate masks. 192 entities
+    // populate all 64 signatures (1+1+1+1 = at least three per signature),
+    // exercising adjacency edges and swap-remove correctness.
+    let mut arch_world = engine_core::World::new();
+    let mut arch_entities = Vec::new();
+    for i in 0..192i32 {
+        let e = arch_world.spawn();
+        let mask = (i as u32) & 0x3F; // 6 bits → 64 archetypes
+        if mask & 0b000001 != 0 {
+            arch_world.insert(e, ArchA { a: i });
+        }
+        if mask & 0b000010 != 0 {
+            arch_world.insert(e, ArchB { b: i + 1 });
+        }
+        if mask & 0b000100 != 0 {
+            arch_world.insert(e, ArchC { c: i + 2 });
+        }
+        if mask & 0b001000 != 0 {
+            arch_world.insert(e, ArchD { d: i + 3 });
+        }
+        if mask & 0b010000 != 0 {
+            arch_world.insert(e, ArchE { e: i + 4 });
+        }
+        if mask & 0b100000 != 0 {
+            arch_world.insert(e, ArchF { f: i + 5 });
+        }
+        if (i as u32).is_multiple_of(5) {
+            arch_world.insert(e, ArchTag { t: i as u32 });
+        }
+        if (i as u32).is_multiple_of(7) {
+            arch_world.insert(e, ArchMark { m: (i * 13) as u32 });
+        }
+        arch_entities.push(e);
+    }
+    // Despawn every fourth entity to exercise archetype swap-remove paths.
+    for i in (0..arch_entities.len()).step_by(4) {
+        arch_world.despawn(arch_entities[i]);
+    }
+
+    // Fold the typed query output into the digest. Iteration order is
+    // ascending ArchetypeId then ascending row; both halves are fixed by
+    // the deterministic archetype interning hasher, so the resulting byte
+    // sequence is reproducible across runs and architectures.
+    arch_world.for_each::<ArchA>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.a as i64);
+    });
+    arch_world.for_each::<ArchB>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.b as i64);
+    });
+    arch_world.for_each::<ArchC>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.c as i64);
+    });
+    arch_world.for_each::<ArchD>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.d as i64);
+    });
+    arch_world.for_each::<ArchE>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.e as i64);
+    });
+    arch_world.for_each::<ArchF>(|e, c| {
+        d.u64(e.to_bits());
+        d.i64(c.f as i64);
+    });
+    arch_world.for_each::<ArchTag>(|e, c| {
+        d.u64(e.to_bits());
+        d.u64(c.t as u64);
+    });
+    arch_world.for_each::<ArchMark>(|e, c| {
+        d.u64(e.to_bits());
+        d.u64(c.m as u64);
+    });
+
+    // Joint query: (&A, &B) — runs through the archetype-walking
+    // QueryIter, fixing iteration order at the ArchetypeId level.
+    for (e, a, b) in arch_world.query::<(&ArchA, &ArchB)>().iter() {
+        d.u64(e.to_bits());
+        d.i64(a.a as i64);
+        d.i64(b.b as i64);
+    }
 
     d.hash
 }

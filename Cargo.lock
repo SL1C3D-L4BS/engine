@@ -339,12 +339,14 @@ dependencies = [
  "blake3",
  "criterion",
  "engine-ecs-macro",
+ "engine-reflect",
 ]
 
 [[package]]
 name = "engine-ecs-macro"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "proc-macro2",
  "quote",
  "syn",

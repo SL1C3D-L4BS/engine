@@ -77,6 +77,18 @@ profiler-baseline:
       ./target/release/sampling-profiler --rate-hz $$hz --duration-s 1 --workload arena_alloc > /dev/null ; \
     done
 
+# Refresh the archetype-traversal observatory baseline (ADR-031). The
+# `archetype-traversal` cache-observatory mode lands with the PR 3
+# million-entities harness; until then this recipe is a placeholder that
+# mirrors the other observatory recipes.
+archetype-baseline:
+    cargo run --release -p cache-observatory -- --workload archetype-traversal
+
+# Run the engine-core archetype oracle (ADR-031): adjacency moves, both
+# storage backends, swap-remove correctness.
+archetype-oracle:
+    cargo test -p engine-core --test archetype
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

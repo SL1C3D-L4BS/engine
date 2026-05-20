@@ -1,64 +1,34 @@
-//! Component storage backends.
+//! Sparse component storage — the SparseSet backend (spec IV.3, ADR-002).
 //!
-//! Two strategies are provided, matching the spec's hybrid model (IV.3,
-//! ADR-002):
+//! Table components live in archetype-grouped columns (see
+//! [`super::archetype`]). SparseSet components are kept out of the archetype
+//! signature: they're churn-heavy or tag-like by design, so paying the
+//! migration cost of an archetype move on every insert/remove would defeat
+//! the whole point of the backend. Instead each SparseSet component type
+//! owns a single world-scoped [`SparseColumn<T>`], indexed by the entity's
+//! storage slot, and queries that mix Table and Sparse components join via
+//! sparse lookup.
 //!
-//! - [`DenseColumn`] backs `StorageKind::Table` — a slot per entity index,
-//!   contiguous and cache-friendly to scan. This is the default hot path.
-//! - [`SparseColumn`] backs `StorageKind::SparseSet` — a sparse/dense pair
-//!   giving O(1) insert and remove, ideal for tag-like and churn-heavy
-//!   components.
-//!
-//! The archetype-grouped Structure-of-Arrays layout (entities physically
-//! grouped by their component set) is the Phase 3 performance rewrite; the
-//! foundation layer establishes the correct API and both backends behind it.
+//! ADR-002 calls the two backends "complement, not alternative"; the
+//! archetype redesign in ADR-031 preserves that.
 
-use super::StorageKind;
 use std::any::Any;
 
-/// Type-erased view of a component column, used to clear a despawned entity's
-/// components without knowing their concrete types.
-pub(crate) trait AnyColumn: Any {
+/// Type-erased handle to a SparseSet column, used to clear a despawned
+/// entity's components without knowing their concrete type.
+pub(crate) trait AnySparseColumn: Any {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Removes whatever component is stored for `index`, if any.
     fn erase(&mut self, index: u32);
 }
 
-/// `Table` backend: one optional slot per entity index.
-pub(crate) struct DenseColumn<T> {
-    slots: Vec<Option<T>>,
-}
+const ABSENT: u32 = u32::MAX;
 
-impl<T> DenseColumn<T> {
-    fn new() -> Self {
-        Self { slots: Vec::new() }
-    }
-
-    fn insert(&mut self, index: u32, value: T) {
-        let i = index as usize;
-        if i >= self.slots.len() {
-            self.slots.resize_with(i + 1, || None);
-        }
-        self.slots[i] = Some(value);
-    }
-
-    fn remove(&mut self, index: u32) -> Option<T> {
-        self.slots.get_mut(index as usize).and_then(Option::take)
-    }
-
-    fn get(&self, index: u32) -> Option<&T> {
-        self.slots.get(index as usize).and_then(Option::as_ref)
-    }
-
-    fn get_mut(&mut self, index: u32) -> Option<&mut T> {
-        self.slots.get_mut(index as usize).and_then(Option::as_mut)
-    }
-}
-
-/// `SparseSet` backend: a sparse index table over a packed dense array.
+/// A sparse index table over a packed dense array — O(1) insert, remove,
+/// and lookup with no per-entity wastage when the population is sparse.
 pub(crate) struct SparseColumn<T> {
-    /// `entity index -> dense position`, or `u32::MAX` when absent.
+    /// `entity index -> dense position`, or [`ABSENT`] when absent.
     sparse: Vec<u32>,
     /// `dense position -> entity index`.
     dense_index: Vec<u32>,
@@ -66,10 +36,8 @@ pub(crate) struct SparseColumn<T> {
     dense_value: Vec<T>,
 }
 
-const ABSENT: u32 = u32::MAX;
-
 impl<T> SparseColumn<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sparse: Vec::new(),
             dense_index: Vec::new(),
@@ -84,7 +52,7 @@ impl<T> SparseColumn<T> {
         }
     }
 
-    fn insert(&mut self, index: u32, value: T) {
+    pub(crate) fn insert(&mut self, index: u32, value: T) {
         let i = index as usize;
         if i >= self.sparse.len() {
             self.sparse.resize(i + 1, ABSENT);
@@ -98,7 +66,7 @@ impl<T> SparseColumn<T> {
         }
     }
 
-    fn remove(&mut self, index: u32) -> Option<T> {
+    pub(crate) fn remove(&mut self, index: u32) -> Option<T> {
         let pos = self.dense_pos(index)?;
         let last = self.dense_index.len() - 1;
         self.dense_index.swap(pos, last);
@@ -110,80 +78,31 @@ impl<T> SparseColumn<T> {
         self.dense_value.pop()
     }
 
-    fn get(&self, index: u32) -> Option<&T> {
+    pub(crate) fn get(&self, index: u32) -> Option<&T> {
         self.dense_pos(index).map(|p| &self.dense_value[p])
     }
 
-    fn get_mut(&mut self, index: u32) -> Option<&mut T> {
+    pub(crate) fn get_mut(&mut self, index: u32) -> Option<&mut T> {
         match self.dense_pos(index) {
             Some(p) => Some(&mut self.dense_value[p]),
             None => None,
         }
     }
-}
-
-/// A component column: one of the two storage backends, chosen per component
-/// type from `Component::STORAGE`.
-pub(crate) enum ComponentColumn<T> {
-    Dense(DenseColumn<T>),
-    Sparse(SparseColumn<T>),
-}
-
-impl<T> ComponentColumn<T> {
-    pub(crate) fn new(kind: StorageKind) -> Self {
-        match kind {
-            StorageKind::Table => ComponentColumn::Dense(DenseColumn::new()),
-            StorageKind::SparseSet => ComponentColumn::Sparse(SparseColumn::new()),
-        }
-    }
-
-    pub(crate) fn insert(&mut self, index: u32, value: T) {
-        match self {
-            ComponentColumn::Dense(c) => c.insert(index, value),
-            ComponentColumn::Sparse(c) => c.insert(index, value),
-        }
-    }
-
-    pub(crate) fn remove(&mut self, index: u32) -> Option<T> {
-        match self {
-            ComponentColumn::Dense(c) => c.remove(index),
-            ComponentColumn::Sparse(c) => c.remove(index),
-        }
-    }
-
-    pub(crate) fn get(&self, index: u32) -> Option<&T> {
-        match self {
-            ComponentColumn::Dense(c) => c.get(index),
-            ComponentColumn::Sparse(c) => c.get(index),
-        }
-    }
-
-    pub(crate) fn get_mut(&mut self, index: u32) -> Option<&mut T> {
-        match self {
-            ComponentColumn::Dense(c) => c.get_mut(index),
-            ComponentColumn::Sparse(c) => c.get_mut(index),
-        }
-    }
 
     pub(crate) fn contains(&self, index: u32) -> bool {
-        self.get(index).is_some()
+        self.dense_pos(index).is_some()
     }
 
     /// Entity indices holding this component, always in ascending order so
-    /// iteration is deterministic (spec IV.2) regardless of backend.
+    /// iteration is deterministic (spec IV.2) regardless of insert history.
     pub(crate) fn sorted_indices(&self) -> Vec<u32> {
-        let mut indices: Vec<u32> = match self {
-            ComponentColumn::Dense(c) => (0..c.slots.len() as u32)
-                .filter(|&i| c.slots[i as usize].is_some())
-                .collect(),
-            ComponentColumn::Sparse(c) => c.dense_index.clone(),
-        };
+        let mut indices = self.dense_index.clone();
         indices.sort_unstable();
         indices
     }
 }
 
-impl<T: 'static> AnyColumn for ComponentColumn<T> {
+impl<T: 'static> AnySparseColumn for SparseColumn<T> {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -201,8 +120,9 @@ impl<T: 'static> AnyColumn for ComponentColumn<T> {
 mod tests {
     use super::*;
 
-    fn round_trip(kind: StorageKind) {
-        let mut col: ComponentColumn<i32> = ComponentColumn::new(kind);
+    #[test]
+    fn sparse_round_trips() {
+        let mut col: SparseColumn<i32> = SparseColumn::new();
         col.insert(5, 50);
         col.insert(2, 20);
         col.insert(9, 90);
@@ -217,17 +137,7 @@ mod tests {
         assert!(!col.contains(5));
         assert_eq!(col.remove(5), None);
 
-        // Iteration order is ascending for both backends.
+        // Iteration order is ascending.
         assert_eq!(col.sorted_indices(), vec![2, 9]);
-    }
-
-    #[test]
-    fn dense_backend_round_trips() {
-        round_trip(StorageKind::Table);
-    }
-
-    #[test]
-    fn sparse_backend_round_trips() {
-        round_trip(StorageKind::SparseSet);
     }
 }

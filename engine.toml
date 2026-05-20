@@ -3,12 +3,13 @@
 
 [platform]
 spec_version = "2.0"
-# Phase 2 (LINUX SYSTEMS, spec Part XXI) closed: owned Robin Hood hash map
-# (ADR-028), mmap'd pak loader (ADR-029), sampling profiler (ADR-030).
-# `phase` stays at "2" until Phase 3 starts; bump when the next portfolio
-# lands. Upper layers (render, physics, audio, net, script, ai, editor, …)
-# remain stubs for Phase 3+.
-phase = "2"
+# Phase 3 (ENGINE CORE, spec Part XXI) in progress. PR 1 (ADR-031) lands
+# archetype-SoA storage and the `TypeStableId` cross-arch identifier; PR 2
+# (ADR-032) adds the owned fiber job system in engine-platform; PR 3
+# (ADR-033) closes the phase with the deterministic parallel scheduler, the
+# 1 M-entity benchmark, and the replay-parity oracle. Upper layers (render,
+# physics, audio, net, script, ai, editor, …) remain stubs for Phase 4+.
+phase = "3"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

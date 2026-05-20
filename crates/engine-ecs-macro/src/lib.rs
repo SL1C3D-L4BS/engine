@@ -7,7 +7,11 @@
 //! dedicated `proc-macro` crate, and the spec's Level 0 crate list names only
 //! one such crate.
 //!
-//! - [`macro@Component`] — implements `engine_core::ecs::Component`.
+//! - [`macro@Component`] — implements `engine_core::ecs::Component`, including
+//!   the [`TypeStableId`](engine_reflect::TypeStableId) used by the archetype
+//!   index (ADR-031). The id is computed at macro-expansion time by hashing
+//!   `crate_name || "::" || ident` with BLAKE3 and emitted as a literal `u64`,
+//!   so the derived `STABLE_ID` is a `const` and no runtime hashing is needed.
 //! - [`macro@Reflect`] — implements `engine_reflect::Reflect`.
 //!
 //! The generated code refers to `::engine_core` and `::engine_reflect` by
@@ -21,6 +25,12 @@ use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 ///
 /// Storage defaults to the archetype `Table`. Opt into sparse storage with
 /// `#[component(storage = "SparseSet")]` (spec IV.3 / ADR-002).
+///
+/// Also emits the component's [`TypeStableId`](engine_reflect::TypeStableId)
+/// as `const STABLE_ID` — a cross-architecture-stable 64-bit identifier the
+/// archetype index uses in place of `std::any::TypeId` (ADR-031). The id is
+/// derived from `BLAKE3(crate_name || "::" || ident)`, computed at
+/// macro-expansion time, and emitted as a literal `u64`.
 #[proc_macro_derive(Component, attributes(component))]
 pub fn derive_component(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -32,13 +42,35 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
+    let stable_id_u64 = compute_stable_id(&name.to_string());
+
     quote! {
         impl #impl_generics ::engine_core::ecs::Component for #name #ty_generics #where_clause {
             const STORAGE: ::engine_core::ecs::StorageKind =
                 ::engine_core::ecs::StorageKind::#storage;
+            const STABLE_ID: ::engine_reflect::TypeStableId =
+                ::engine_reflect::TypeStableId(#stable_id_u64);
         }
     }
     .into()
+}
+
+/// Computes the `TypeStableId` `u64` for a component named `ident`.
+///
+/// The hashed string is `crate_name || "::" || ident`, where `crate_name`
+/// comes from the `CARGO_CRATE_NAME` environment variable cargo sets when it
+/// invokes the proc-macro. The full Rust `module_path!()` is not visible at
+/// expansion time, so this is the closest stable qualifier available — same
+/// crate + same type ident is the practical uniqueness guarantee (ADR-031
+/// "Risks and tradeoffs").
+fn compute_stable_id(ident: &str) -> u64 {
+    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let qualified = format!("{crate_name}::{ident}");
+    let hash = blake3::hash(qualified.as_bytes());
+    let bytes = hash.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
 }
 
 /// Reads the `storage` value out of `#[component(...)]`, defaulting to `Table`.
@@ -154,6 +186,42 @@ pub fn derive_reflect(input: TokenStream) -> TokenStream {
                     } )*
                     _ => false,
                 }
+            }
+        }
+    }
+    .into()
+}
+
+/// Derives `engine_core::ecs::CanonicalBytes` for `Copy + 'static` components.
+///
+/// The implementation simply reinterprets `&Self` as `&[u8; size_of::<Self>()]`
+/// and returns it. Used only by the Phase 3 replay-parity oracle (ADR-033) —
+/// production code never calls it. Padding bytes contribute to the digest;
+/// callers using this derive must use components with no implementation-
+/// defined padding (typically `#[repr(C)]` plain-data structs).
+#[proc_macro_derive(CanonicalBytes)]
+pub fn derive_canonical_bytes(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    quote! {
+        impl #impl_generics ::engine_core::ecs::CanonicalBytes
+            for #name #ty_generics #where_clause
+        {
+            fn canonical_bytes(&self) -> ::core::option::Option<&[u8]> {
+                // SAFETY: `Self: Copy + 'static` (enforced by the trait
+                // bound) means the value is a self-contained run of bytes
+                // we can reinterpret as `&[u8]` for the byte length of the
+                // type. The slice borrows from `self`, so its lifetime is
+                // bounded by the caller's borrow.
+                let bytes: &[u8] = unsafe {
+                    ::core::slice::from_raw_parts(
+                        (self as *const Self) as *const u8,
+                        ::core::mem::size_of::<Self>(),
+                    )
+                };
+                ::core::option::Option::Some(bytes)
             }
         }
     }
