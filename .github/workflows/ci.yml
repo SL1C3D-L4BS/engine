@@ -53,9 +53,15 @@ jobs:
           # Phase 2 own-the-substrate: engine-core and engine-asset library
           # source must use engine_core::collections::HashMap, not std's
           # SwissTable. Tests and benches stay free to compare against std.
-          if grep -rnE 'std::collections::HashMap|use std::collections::HashMap' \
+          # The second grep strips line-comment / doc-comment lines so
+          # rustdoc cross-references like `[std::collections::HashMap]`
+          # don't trip the guard.
+          hits=$(grep -rnE 'std::collections::HashMap|use std::collections::HashMap' \
               crates/engine-core/src \
-              crates/engine-asset/src; then
+              crates/engine-asset/src \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
             echo "::error::Use engine_core::collections::HashMap instead of std's — see ADR-028"
             exit 1
           fi
@@ -70,10 +76,15 @@ jobs:
           # MmapRo so the munmap-on-drop and length-bounds invariants stay
           # in one place. The sampler intentionally does *not* go through
           # MmapRo because the perf-event fd is not a regular file and
-          # needs PROT_WRITE on the header page.
-          if grep -rnE 'libc::mmap|libc::munmap|libc::madvise' crates \
+          # needs PROT_WRITE on the header page. The third grep strips
+          # line-/doc-comment lines so docstring references to
+          # `libc::mmap` don't trip the guard.
+          hits=$(grep -rnE 'libc::mmap|libc::munmap|libc::madvise' crates \
               | grep -v -e 'crates/engine-platform/src/mmap.rs' \
-                       -e 'crates/engine-platform/src/sampler.rs'; then
+                       -e 'crates/engine-platform/src/sampler.rs' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
             echo "::error::Use engine_platform::mmap::MmapRo — see ADR-029"
             exit 1
           fi
