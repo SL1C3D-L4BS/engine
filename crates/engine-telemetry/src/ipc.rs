@@ -60,6 +60,13 @@ pub enum WireSignal {
         /// Flat key/value payload.
         fields: Vec<(String, String)>,
     },
+    /// A folded sampling-profiler stack count. See [`Signal::Sample`].
+    Sample {
+        /// Stable identifier of the call chain.
+        stack_id: u64,
+        /// Number of times this chain was observed.
+        count: u64,
+    },
 }
 
 impl WireSignal {
@@ -105,6 +112,10 @@ impl WireSignal {
                 name: (*name).to_string(),
                 subsystem: subsystem.as_u8(),
                 fields: fields.clone(),
+            },
+            Signal::Sample { stack_id, count } => Self::Sample {
+                stack_id: *stack_id,
+                count: *count,
             },
         }
     }
@@ -336,6 +347,11 @@ fn encode_signal(signal: &WireSignal, out: &mut Vec<u8>) {
                 encode_str(value, out);
             }
         }
+        WireSignal::Sample { stack_id, count } => {
+            out.push(4);
+            out.extend_from_slice(&stack_id.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
+        }
     }
 }
 
@@ -372,6 +388,10 @@ fn decode_signal(r: &mut Reader<'_>) -> Result<WireSignal, IpcError> {
                 fields,
             }
         }
+        4 => WireSignal::Sample {
+            stack_id: r.u64()?,
+            count: r.u64()?,
+        },
         _ => return Err(IpcError::BadTag),
     })
 }

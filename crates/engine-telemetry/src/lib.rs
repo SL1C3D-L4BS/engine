@@ -20,9 +20,11 @@ pub mod consent;
 pub mod ipc;
 pub mod log;
 pub mod metrics;
+pub mod profiler;
 
 pub use collector::Collector;
 pub use consent::ConsentStore;
 pub use ipc::{IpcError, Message, WireSignal};
 pub use log::{LogLevel, LogRecord, LogWriter};
 pub use metrics::MetricsRegistry;
+pub use profiler::{FoldedStack, FoldedStacks, SamplingProfiler};

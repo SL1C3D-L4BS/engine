@@ -15,6 +15,7 @@
 pub mod fs;
 pub mod input;
 pub mod mmap;
+pub mod sampler;
 pub mod sysinfo;
 pub mod time;
 pub mod watch;

@@ -612,6 +612,71 @@ impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
 impl<'a, K, V> ExactSizeIterator for ValuesMut<'a, K, V> {}
 impl<'a, K, V> FusedIterator for ValuesMut<'a, K, V> {}
 
+/// Owning iterator over `(K, V)`.
+pub struct IntoIter<K, V> {
+    // Walked element-by-element so each slot drops correctly: when this
+    // iterator is dropped, any slots we haven't yielded yet drop normally
+    // via the Vec's Drop impl, which calls Slot::drop, which drops live
+    // keys/values.
+    slots: std::vec::IntoIter<Slot<K, V>>,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<(K, V)> {
+        for mut slot in self.slots.by_ref() {
+            if slot.occupied {
+                self.remaining -= 1;
+                slot.occupied = false;
+                let k = unsafe { slot.key.assume_init_read() };
+                let v = unsafe { slot.val.assume_init_read() };
+                return Some((k, v));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> FusedIterator for IntoIter<K, V> {}
+
+impl<K, V, S> IntoIterator for HashMap<K, V, S> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> IntoIter<K, V> {
+        let remaining = self.len;
+        IntoIter {
+            slots: self.slots.into_vec().into_iter(),
+            remaining,
+        }
+    }
+}
+
+impl<'a, K, V, S> IntoIterator for &'a HashMap<K, V, S> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Iter<'a, K, V> {
+        self.iter()
+    }
+}
+
+impl<'a, K, V, S> IntoIterator for &'a mut HashMap<K, V, S> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> IterMut<'a, K, V> {
+        self.iter_mut()
+    }
+}
+
 /// Draining iterator. On drop, any remaining entries are dropped and the
 /// map is left empty.
 pub struct Drain<'a, K, V, S> {

@@ -94,6 +94,15 @@ pub enum Signal {
         /// Key/value fields.
         fields: Vec<(String, String)>,
     },
+    /// One folded sampling-profiler stack count (ADR-030).
+    Sample {
+        /// Stable identifier of the call chain. Folded by the consumer
+        /// from the per-sample IP chain.
+        stack_id: u64,
+        /// Number of times this chain was observed in the current
+        /// drain.
+        count: u64,
+    },
 }
 
 /// Slots in each thread's telemetry ring (spec X.3).

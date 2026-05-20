@@ -65,6 +65,17 @@ impl MetricsRegistry {
                     .entry(format!("{}_total", metric_name(name)))
                     .or_insert(0) += 1;
             }
+            Signal::Sample { count, .. } => {
+                // Aggregate every observed call-chain into one global
+                // counter — the per-stack identity lives in the IPC
+                // channel for tools that consume folded stacks
+                // (ADR-030); the metrics endpoint only needs the
+                // aggregate throughput.
+                *self
+                    .counters
+                    .entry("sampling_profiler_samples_total".to_string())
+                    .or_insert(0) += count;
+            }
         }
     }
 

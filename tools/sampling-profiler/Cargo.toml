@@ -1,0 +1,23 @@
+[package]
+name = "sampling-profiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# A minimal CLI that exercises engine_telemetry::SamplingProfiler against
+# CPU-bound workloads and emits Brendan-Gregg-style folded stack output to
+# stdout (spec XXI / ADR-030). Owned arg parsing — no clap dependency
+# (R-02).
+
+[[bin]]
+name = "sampling-profiler"
+path = "src/main.rs"
+
+[dependencies]
+engine-core = { workspace = true }
+engine-platform = { workspace = true }
+engine-telemetry = { workspace = true }
+
+[lints]
+workspace = true

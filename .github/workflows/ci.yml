@@ -60,20 +60,48 @@ jobs:
             exit 1
           fi
 
-      - name: Guard against raw mmap outside engine-platform::mmap (ADR-029)
+      - name: Guard against raw mmap outside engine-platform (ADR-029)
         run: |
-          # The mmap syscall lives in exactly one file. Anywhere else,
-          # including engine-asset, must route through MmapRo so the
-          # munmap-on-drop and length-bounds invariants stay in one place.
-          # Allowlist: `crates/engine-platform/src/mmap.rs` only.
+          # The mmap syscall is allowed in two files only:
+          #   - crates/engine-platform/src/mmap.rs (regular files; ADR-029)
+          #   - crates/engine-platform/src/sampler.rs (perf-event-fd ring
+          #     buffer; ADR-030)
+          # Anywhere else — including engine-asset — must route through
+          # MmapRo so the munmap-on-drop and length-bounds invariants stay
+          # in one place. The sampler intentionally does *not* go through
+          # MmapRo because the perf-event fd is not a regular file and
+          # needs PROT_WRITE on the header page.
           if grep -rnE 'libc::mmap|libc::munmap|libc::madvise' crates \
-              | grep -v 'crates/engine-platform/src/mmap.rs'; then
+              | grep -v -e 'crates/engine-platform/src/mmap.rs' \
+                       -e 'crates/engine-platform/src/sampler.rs'; then
             echo "::error::Use engine_platform::mmap::MmapRo — see ADR-029"
             exit 1
           fi
 
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
+
+      # Sampling profiler oracle (ADR-030). Requires frame-pointer codegen
+      # so the kernel's PERF_SAMPLE_CALLCHAIN walker finds frames past the
+      # leaf; --release is required because the oracle's "spinner is ≥80%
+      # of self-time" threshold only holds in an optimized build.
+      - name: Sampling profiler oracle (Linux)
+        env:
+          RUSTFLAGS: "-C force-frame-pointers=yes"
+        run: |
+          # Frame-pointer guard: the test below would silently degrade
+          # without this flag — every chain would truncate at the leaf,
+          # which is *not* a regression we can let pass.
+          case "$RUSTFLAGS" in
+            *force-frame-pointers=yes*)
+              echo "frame-pointer codegen on: ok"
+              ;;
+            *)
+              echo "::error::profiler_oracle requires -C force-frame-pointers=yes in RUSTFLAGS (ADR-030)"
+              exit 1
+              ;;
+          esac
+          cargo test --release -p engine-telemetry --test profiler_oracle
 
   determinism:
     strategy:

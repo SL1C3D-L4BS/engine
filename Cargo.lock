@@ -613,6 +613,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampling-profiler"
+version = "0.0.0"
+dependencies = [
+ "engine-core",
+ "engine-platform",
+ "engine-telemetry",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"

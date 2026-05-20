@@ -61,6 +61,22 @@ hashmap-baseline:
 mmap-baseline:
     cargo run --release -p engine-asset --example mmap_baseline
 
+# Run the sampling profiler oracle (ADR-030). Requires Linux, frame-pointer
+# codegen, and an optimized build — the oracle's "spinner ≥ 80% self-time"
+# threshold only holds with optimizations on.
+profiler-oracle:
+    RUSTFLAGS="-C force-frame-pointers=yes" cargo test --release -p engine-telemetry --test profiler_oracle
+
+# Refresh the sampling-profiler baseline (ADR-030). Reports overhead and
+# sample-drop rate at 99/199/499/997 Hz. Commit summary numbers to
+# `docs/observatory/profiler-baseline.md`.
+profiler-baseline:
+    RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release -p sampling-profiler
+    @for hz in 99 199 499 997; do \
+      echo "## $$hz Hz" ; \
+      ./target/release/sampling-profiler --rate-hz $$hz --duration-s 1 --workload arena_alloc > /dev/null ; \
+    done
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"
