@@ -36,6 +36,10 @@
 use std::fs::File;
 use std::io;
 use std::path::Path;
+use std::ptr;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::raw::c_void;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod posix {
@@ -180,6 +184,156 @@ impl std::fmt::Debug for MmapRo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MmapRo").field("len", &self.len()).finish()
     }
+}
+
+// ---------------------------------------------------------------------------
+// MmapAnon — anonymous, page-aligned, RW mapping with an optional PROT_NONE
+// guard page (ADR-032). Used by the fiber stack allocator: each per-job
+// stack is an MmapAnon with a one-page guard at the low address, so a
+// stack overflow segfaults the offending thread instead of trampling
+// adjacent stacks.
+// ---------------------------------------------------------------------------
+
+/// An anonymous read/write mapping with an optional low-address
+/// `PROT_NONE` guard page.
+///
+/// Allocated via `libc::mmap(MAP_ANON | MAP_PRIVATE)` followed by an
+/// `mprotect(PROT_NONE)` of the first page; on drop the *full* region
+/// (including the guard) is unmapped. `usable_bytes()` returns the
+/// length the caller may write to (the region size minus one page when a
+/// guard is requested, the full region otherwise).
+///
+/// Linux and macOS only. On other targets the constructor returns
+/// [`io::ErrorKind::Unsupported`] mirroring the [`MmapRo`] policy.
+pub struct MmapAnon {
+    ptr: *mut u8,
+    region_bytes: usize,
+    usable_offset: usize,
+    usable_bytes: usize,
+}
+
+unsafe impl Send for MmapAnon {}
+unsafe impl Sync for MmapAnon {}
+
+impl MmapAnon {
+    /// Allocates an anonymous mapping of at least `bytes` usable
+    /// read/write bytes, optionally preceded by a `PROT_NONE` guard page.
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] on non-POSIX targets.
+    pub fn new(bytes: usize, with_guard_page: bool) -> io::Result<Self> {
+        anon::open(bytes, with_guard_page)
+    }
+
+    /// A raw pointer to the first usable byte of the region.
+    pub fn as_ptr(&self) -> *mut u8 {
+        // SAFETY: `ptr` is valid for `region_bytes`; the `usable_offset`
+        // byte still lies inside the allocation.
+        unsafe { self.ptr.add(self.usable_offset) }
+    }
+
+    /// The size of the usable (RW) region in bytes.
+    pub fn usable_bytes(&self) -> usize {
+        self.usable_bytes
+    }
+
+    /// The full size of the underlying allocation, including the guard
+    /// page when present.
+    pub fn region_bytes(&self) -> usize {
+        self.region_bytes
+    }
+}
+
+impl Drop for MmapAnon {
+    fn drop(&mut self) {
+        if self.region_bytes != 0 && !self.ptr.is_null() {
+            anon::close(self.ptr, self.region_bytes);
+        }
+        self.ptr = ptr::null_mut();
+        self.region_bytes = 0;
+        self.usable_bytes = 0;
+    }
+}
+
+impl std::fmt::Debug for MmapAnon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmapAnon")
+            .field("usable_bytes", &self.usable_bytes)
+            .field("region_bytes", &self.region_bytes)
+            .finish()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod anon {
+    use super::*;
+
+    pub(super) fn open(bytes: usize, with_guard_page: bool) -> io::Result<MmapAnon> {
+        // SAFETY: page-size syscall has no preconditions.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let usable_pages = bytes.div_ceil(page).max(1);
+        let total_pages = usable_pages + if with_guard_page { 1 } else { 0 };
+        let region_bytes = total_pages * page;
+        // SAFETY: addr = NULL lets the kernel pick the location; flags and
+        // prot are stock anonymous-private RW. The returned pointer is
+        // checked against MAP_FAILED.
+        let raw = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                region_bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if raw == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        if with_guard_page {
+            // SAFETY: `raw` is page-aligned by `mmap`'s contract; `page`
+            // is the kernel-reported page size; both are inside the
+            // freshly-allocated region.
+            let res = unsafe { libc::mprotect(raw, page, libc::PROT_NONE) };
+            if res != 0 {
+                let err = io::Error::last_os_error();
+                // Best-effort cleanup; the mmap leaks at most this region
+                // on the error path, which never happens in practice.
+                unsafe {
+                    libc::munmap(raw, region_bytes);
+                }
+                return Err(err);
+            }
+        }
+        Ok(MmapAnon {
+            ptr: raw as *mut u8,
+            region_bytes,
+            usable_offset: if with_guard_page { page } else { 0 },
+            usable_bytes: usable_pages * page,
+        })
+    }
+
+    pub(super) fn close(ptr: *mut u8, region_bytes: usize) {
+        // SAFETY: `ptr` was returned by a successful `mmap` of length
+        // `region_bytes` in `open` and is unmapped at most once (the
+        // caller's Drop is the only path to here).
+        unsafe {
+            libc::munmap(ptr as *mut c_void, region_bytes);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod anon {
+    use super::*;
+
+    pub(super) fn open(_bytes: usize, _with_guard_page: bool) -> io::Result<MmapAnon> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "MmapAnon is only implemented for Linux and macOS in Phase 3",
+        ))
+    }
+
+    pub(super) fn close(_ptr: *mut u8, _region_bytes: usize) {}
 }
 
 #[cfg(test)]

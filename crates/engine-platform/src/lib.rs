@@ -12,17 +12,22 @@
 //! types](input). Windowing and GPU surface creation depend on a
 //! compositor and arrive with the renderer in a later phase.
 
+pub mod fiber;
 pub mod fs;
 pub mod input;
+pub mod jobs;
 pub mod mmap;
 pub mod sampler;
 pub mod sysinfo;
+pub mod thread_pool;
 pub mod time;
 pub mod watch;
 
 pub use input::{ButtonState, InputEvent, Key, Modifiers, MouseButton};
-pub use mmap::MmapRo;
+pub use jobs::{JobGraph, JobId};
+pub use mmap::{MmapAnon, MmapRo};
 pub use sysinfo::{Arch, Os, SystemInfo};
+pub use thread_pool::ThreadPool;
 pub use time::FramePacer;
 pub use watch::{FileWatcher, PollingWatcher, WatchEvent, WatchKind};
 

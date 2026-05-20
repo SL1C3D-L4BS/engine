@@ -383,6 +383,8 @@ version = "0.0.0"
 name = "engine-platform"
 version = "0.0.0"
 dependencies = [
+ "blake3",
+ "criterion",
  "libc",
 ]
 

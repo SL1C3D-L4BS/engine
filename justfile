@@ -89,6 +89,17 @@ archetype-baseline:
 archetype-oracle:
     cargo test -p engine-core --test archetype
 
+# Run the engine-platform jobs oracle (ADR-032): single-threaded reference
+# vs parallel pool digests across worker counts {1, 2, 4, N}.
+jobs-oracle:
+    cargo test -p engine-platform --test jobs_oracle
+
+# Refresh the jobs throughput baseline (ADR-032). Records dispatch overhead
+# and throughput across linear / fan-out / mixed-grain graph shapes.
+# Commit summary numbers to `docs/observatory/jobs-baseline.md`.
+jobs-bench:
+    cargo bench -p engine-platform --bench jobs
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

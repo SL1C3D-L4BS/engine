@@ -8,5 +8,16 @@ rust-version.workspace = true
 [dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# Used by the Phase 3 jobs_oracle (ADR-032) to hash final scheduler
+# output across worker counts — keeps the oracle's comparison free of
+# accidental ordering dependencies in the assertion path.
+blake3 = "1"
+criterion = { workspace = true }
+
+[[bench]]
+name = "jobs"
+harness = false
+
 [lints]
 workspace = true
