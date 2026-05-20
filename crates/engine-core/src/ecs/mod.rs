@@ -22,7 +22,7 @@ pub mod world;
 
 pub use archetype::{ArchetypeId, ArchetypeSignature};
 pub use entity::Entity;
-pub use query::Query;
+pub use query::{Mut, Query};
 pub use schedule::{Phase, Schedule};
 pub use type_id::{TypeStableId, stable_id_of};
 pub use world::World;

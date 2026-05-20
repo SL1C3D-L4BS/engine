@@ -28,8 +28,8 @@ pub mod rng;
 pub mod telemetry;
 
 pub use ecs::{
-    ArchetypeId, ArchetypeSignature, Entity, Phase, Query, Schedule, StorageKind, TypeStableId,
-    World,
+    ArchetypeId, ArchetypeSignature, Entity, Mut, Phase, Query, Schedule, StorageKind,
+    TypeStableId, World,
 };
 pub use rng::Rng;
 

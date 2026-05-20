@@ -262,6 +262,163 @@ impl<'w, A: Component, B: Component> WorldQuery<'w> for (&'w A, &'w B) {
     }
 }
 
+// --- Mixed-borrow two-component queries (ADR-033 v0.1.1 follow-up) --------
+//
+// `(Mut<A>, &B)`, `(&A, Mut<B>)`, `(Mut<A>, Mut<B>)` close the million-entity
+// milestone gap by letting a system that mutates one component while reading
+// another do it in a single archetype-stream walk, with no per-frame `Vec`
+// allocation and no per-row archetype lookup. Three structural clones of
+// `ReadRead` with `*mut` swapped in for the appropriate slot.
+
+/// Per-archetype state for a `(Mut<A>, &B)` query.
+#[doc(hidden)]
+pub struct WriteRead<A: Component, B: Component> {
+    a: *mut A,
+    b: *const B,
+    entity_indices: *const u32,
+    world: *const World,
+}
+
+impl<'w, A: Component, B: Component> WorldQuery<'w> for (Mut<A>, &'w B) {
+    type Item = (Entity, &'w mut A, &'w B);
+    type ArchState = WriteRead<A, B>;
+
+    fn required_components() -> Vec<TypeStableId> {
+        vec![A::STABLE_ID, B::STABLE_ID]
+    }
+
+    unsafe fn build_arch_state(world: &'w World, archetype: &Archetype) -> Option<Self::ArchState> {
+        // `A == B` would make the two pointers alias inside the same
+        // archetype, breaking the disjoint-allocation premise of the
+        // SAFETY contract below. `(Mut<T>, &T)` is obvious nonsense at
+        // the call site, so a debug-only guard is enough; release
+        // builds stay branchless on the per-archetype hot path.
+        debug_assert_ne!(
+            A::STABLE_ID,
+            B::STABLE_ID,
+            "WorldQuery<(Mut<A>, &B)>: A and B must be distinct component types",
+        );
+        let ca = archetype.column_index(A::STABLE_ID)?;
+        let cb = archetype.column_index(B::STABLE_ID)?;
+        let a = column_data_ptr_mut::<A>(&archetype.columns[ca]);
+        let b = column_data_ptr::<B>(&archetype.columns[cb]);
+        Some(WriteRead {
+            a,
+            b,
+            entity_indices: archetype.entity_indices.as_ptr(),
+            world: world as *const World,
+        })
+    }
+
+    unsafe fn fetch(state: &mut Self::ArchState, row: usize) -> Self::Item {
+        // SAFETY: `state.a` and `state.b` were derived from two distinct
+        // `AnyVec` columns of the same archetype (signature dedup +
+        // `A != B` guard in `build_arch_state` ⇒ distinct column
+        // indices). Each `AnyVec` owns its own allocation, so the
+        // `&mut A` and `&B` borrow disjoint memory and cannot alias.
+        // `row < len` is upheld by `QueryIter::next`. The world is
+        // borrowed mutably for the iterator's lifetime — same contract
+        // as the existing `Mut<T>` impl.
+        let a: &mut A = unsafe { &mut *state.a.add(row) };
+        let b: &B = unsafe { &*state.b.add(row) };
+        let idx = unsafe { *state.entity_indices.add(row) };
+        let entity = unsafe { (*state.world).entity_from_index(idx) };
+        (entity, a, b)
+    }
+}
+
+/// Per-archetype state for a `(&A, Mut<B>)` query.
+#[doc(hidden)]
+pub struct ReadWrite<A: Component, B: Component> {
+    a: *const A,
+    b: *mut B,
+    entity_indices: *const u32,
+    world: *const World,
+}
+
+impl<'w, A: Component, B: Component> WorldQuery<'w> for (&'w A, Mut<B>) {
+    type Item = (Entity, &'w A, &'w mut B);
+    type ArchState = ReadWrite<A, B>;
+
+    fn required_components() -> Vec<TypeStableId> {
+        vec![A::STABLE_ID, B::STABLE_ID]
+    }
+
+    unsafe fn build_arch_state(world: &'w World, archetype: &Archetype) -> Option<Self::ArchState> {
+        debug_assert_ne!(
+            A::STABLE_ID,
+            B::STABLE_ID,
+            "WorldQuery<(&A, Mut<B>)>: A and B must be distinct component types",
+        );
+        let ca = archetype.column_index(A::STABLE_ID)?;
+        let cb = archetype.column_index(B::STABLE_ID)?;
+        let a = column_data_ptr::<A>(&archetype.columns[ca]);
+        let b = column_data_ptr_mut::<B>(&archetype.columns[cb]);
+        Some(ReadWrite {
+            a,
+            b,
+            entity_indices: archetype.entity_indices.as_ptr(),
+            world: world as *const World,
+        })
+    }
+
+    unsafe fn fetch(state: &mut Self::ArchState, row: usize) -> Self::Item {
+        // SAFETY: mirror of `(Mut<A>, &B)` above with mut/ref swapped.
+        let a: &A = unsafe { &*state.a.add(row) };
+        let b: &mut B = unsafe { &mut *state.b.add(row) };
+        let idx = unsafe { *state.entity_indices.add(row) };
+        let entity = unsafe { (*state.world).entity_from_index(idx) };
+        (entity, a, b)
+    }
+}
+
+/// Per-archetype state for a `(Mut<A>, Mut<B>)` query.
+#[doc(hidden)]
+pub struct WriteWrite<A: Component, B: Component> {
+    a: *mut A,
+    b: *mut B,
+    entity_indices: *const u32,
+    world: *const World,
+}
+
+impl<'w, A: Component, B: Component> WorldQuery<'w> for (Mut<A>, Mut<B>) {
+    type Item = (Entity, &'w mut A, &'w mut B);
+    type ArchState = WriteWrite<A, B>;
+
+    fn required_components() -> Vec<TypeStableId> {
+        vec![A::STABLE_ID, B::STABLE_ID]
+    }
+
+    unsafe fn build_arch_state(world: &'w World, archetype: &Archetype) -> Option<Self::ArchState> {
+        debug_assert_ne!(
+            A::STABLE_ID,
+            B::STABLE_ID,
+            "WorldQuery<(Mut<A>, Mut<B>)>: A and B must be distinct component types",
+        );
+        let ca = archetype.column_index(A::STABLE_ID)?;
+        let cb = archetype.column_index(B::STABLE_ID)?;
+        let a = column_data_ptr_mut::<A>(&archetype.columns[ca]);
+        let b = column_data_ptr_mut::<B>(&archetype.columns[cb]);
+        Some(WriteWrite {
+            a,
+            b,
+            entity_indices: archetype.entity_indices.as_ptr(),
+            world: world as *const World,
+        })
+    }
+
+    unsafe fn fetch(state: &mut Self::ArchState, row: usize) -> Self::Item {
+        // SAFETY: two distinct columns ⇒ disjoint allocations; the two
+        // `&mut` reborrows cannot alias. Same in-bounds + world-borrow
+        // contract as the other mut tuple impls.
+        let a: &mut A = unsafe { &mut *state.a.add(row) };
+        let b: &mut B = unsafe { &mut *state.b.add(row) };
+        let idx = unsafe { *state.entity_indices.add(row) };
+        let entity = unsafe { (*state.world).entity_from_index(idx) };
+        (entity, a, b)
+    }
+}
+
 // --- raw pointer helpers ---------------------------------------------------
 
 fn column_data_ptr<T: Component>(column: &super::archetype::AnyVec) -> *const T {

@@ -18,7 +18,7 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use engine_core::{Component, Entity, Phase, Schedule, World};
+use engine_core::{Component, Entity, Mut, Phase, Schedule, World};
 use engine_platform::ThreadPool;
 
 #[derive(Component, Clone, Copy)]
@@ -66,14 +66,14 @@ fn build_schedule() -> Schedule {
         &[Velocity::STABLE_ID],
         &[Position::STABLE_ID],
         |w: &mut World| {
-            let mut updates: Vec<(Entity, f32, f32, f32)> = Vec::new();
-            w.for_each::<Velocity>(|e, v| updates.push((e, v.dx, v.dy, v.dz)));
-            for (e, dx, dy, dz) in updates {
-                if let Some(p) = w.get_mut::<Position>(e) {
-                    p.x += dx;
-                    p.y += dy;
-                    p.z += dz;
-                }
+            // Single archetype-stream walk: two parallel column pointers,
+            // pointer-bump per row, no per-frame Vec allocation, no
+            // per-row archetype lookup. The change that closes the 1M
+            // milestone gap (ADR-033 v0.1.1 follow-up).
+            for (_e, p, v) in w.query::<(Mut<Position>, &Velocity)>().iter() {
+                p.x += v.dx;
+                p.y += v.dy;
+                p.z += v.dz;
             }
         },
     );

@@ -159,3 +159,36 @@ oracle fails immediately, naming the worker count that broke.
 - CI determinism job runs the replay-parity oracle on both x86-64 and
   aarch64.
 - `cargo clippy --workspace --all-targets -- -D warnings` green.
+
+## Addendum (2026-05-20) — Engine Core v0.1.1: milestone closed
+
+The "Risks and tradeoffs" section called out a *collect-then-mutate*
+allocation pattern as the cause of the 1M sequential frame landing at
+~33 ms (over the 16.6 ms milestone target). A v0.1.1 follow-up added
+the three named-as-deferred joint `WorldQuery` impls and rewrote the
+bench plus the three replay-parity systems that needed them:
+
+- `(Mut<A>, &B)`, `(&A, Mut<B>)`, `(Mut<A>, Mut<B>)` — each a
+  structural clone of the existing `(&A, &B)` impl with `*mut` swapped
+  in for the appropriate slot. Safety: A and B are distinct generic
+  types (different `TypeStableId`), so they live in different `AnyVec`
+  allocations within the same archetype. Two simultaneous reborrows
+  from disjoint allocations cannot alias. A `debug_assert_ne!` in
+  `build_arch_state` traps the `A == B` foot-gun at the cost of one
+  debug-only branch (release builds stay branchless on the
+  per-archetype hot path).
+- The bench's `motion` system collapsed from a 24 MiB-per-frame Vec
+  collect-then-mutate to a single archetype-stream walk. 1M sequential
+  median: **33 ms → 4.35 ms** (7.6× speedup; cleanly under the
+  16.6 ms milestone gate).
+- The replay-parity oracle (the runtime backstop for the new
+  `unsafe` code) was rewritten to drive `motion`, `bounce`, and `cast`
+  through the new joint queries — and stayed green at all worker
+  counts. The determinism golden is unchanged: the new impls are
+  additive, the existing `(&A, &B)` path is untouched.
+
+Numbers and the full history live in
+`docs/observatory/million-entities-baseline.md`. The "richer DSL is
+Phase 4+" wording elsewhere in this ADR refers only to the n > 2 tuple
+case, filters (`With<T>` / `Without<T>`), and the `SystemParam`-style
+macro — all still deferred.

@@ -17,7 +17,7 @@
 //! existing `determinism.rs` oracle; this file is the cross-worker-count
 //! parity check that complements it.
 
-use engine_core::{Component, Entity, Phase, Schedule, World};
+use engine_core::{Component, Entity, Mut, Phase, Schedule, World};
 use engine_platform::ThreadPool;
 
 #[derive(Component, Clone, Copy)]
@@ -73,23 +73,18 @@ fn populate(world: &mut World) -> Vec<Entity> {
 fn build_schedule() -> Schedule {
     let mut schedule = Schedule::new();
     // motion: reads Velocity, writes Position. Parallel-safe with every
-    // system except `bounce` (which writes Velocity). Uses the
-    // collect-then-mutate pattern because the current query DSL only
-    // exposes `(&A, &B)` and single-component mut; the planned wider
-    // DSL is Phase 4+.
+    // system except `bounce` (which writes Velocity). One-pass joint
+    // query (ADR-033 v0.1.1 follow-up) — no per-frame Vec allocation,
+    // no per-row archetype lookup.
     schedule.add_system_with_access(
         Phase::Update,
         "motion",
         &[Velocity::STABLE_ID],
         &[Position::STABLE_ID],
         |w: &mut World| {
-            let mut updates: Vec<(Entity, i64, i64)> = Vec::new();
-            w.for_each::<Velocity>(|e, v| updates.push((e, v.dx, v.dy)));
-            for (e, dx, dy) in updates {
-                if let Some(p) = w.get_mut::<Position>(e) {
-                    p.x = p.x.wrapping_add(dx);
-                    p.y = p.y.wrapping_add(dy);
-                }
+            for (_e, p, v) in w.query::<(Mut<Position>, &Velocity)>().iter() {
+                p.x = p.x.wrapping_add(v.dx);
+                p.y = p.y.wrapping_add(v.dy);
             }
         },
     );
@@ -101,16 +96,11 @@ fn build_schedule() -> Schedule {
         &[Position::STABLE_ID],
         &[Velocity::STABLE_ID],
         |w: &mut World| {
-            let mut snapshots: Vec<(Entity, i64, i64)> = Vec::new();
-            w.for_each::<Position>(|e, p| snapshots.push((e, p.x, p.y)));
-            for (e, x, y) in snapshots {
-                let Some(v) = w.get_mut::<Velocity>(e) else {
-                    continue;
-                };
-                if x.abs() > 10_000 {
+            for (_e, p, v) in w.query::<(&Position, Mut<Velocity>)>().iter() {
+                if p.x.abs() > 10_000 {
                     v.dx = -v.dx;
                 }
-                if y.abs() > 10_000 {
+                if p.y.abs() > 10_000 {
                     v.dy = -v.dy;
                 }
             }
@@ -149,14 +139,9 @@ fn build_schedule() -> Schedule {
         &[Mana::STABLE_ID],
         &[Health::STABLE_ID],
         |w: &mut World| {
-            let mut snapshots: Vec<(Entity, i64)> = Vec::new();
-            w.for_each::<Mana>(|e, m| snapshots.push((e, m.mp)));
-            for (e, mp) in snapshots {
-                let Some(h) = w.get_mut::<Health>(e) else {
-                    continue;
-                };
-                if mp > 0 {
-                    h.hp = h.hp.wrapping_add(mp & 3);
+            for (_e, m, h) in w.query::<(&Mana, Mut<Health>)>().iter() {
+                if m.mp > 0 {
+                    h.hp = h.hp.wrapping_add(m.mp & 3);
                 }
             }
         },

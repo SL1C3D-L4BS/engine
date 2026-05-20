@@ -57,6 +57,42 @@ visible.
 
 ## History
 
-| Date       | Host                  | Commit  | 10k seq | 100k seq | 1M seq | Notes                            |
-|------------|-----------------------|---------|--------:|---------:|-------:|----------------------------------|
-| 2026-05-20 | dev machine (CachyOS) | PR 3    | 0.18 ms | 1.83 ms  | 33 ms  | First-light; pre-Phase-4 DSL.    |
+| Date       | Host                  | Commit  | 10k seq | 100k seq | 1M seq  | Notes                                                          |
+|------------|-----------------------|---------|--------:|---------:|--------:|----------------------------------------------------------------|
+| 2026-05-20 | dev machine (CachyOS) | PR 3    | 0.18 ms | 1.83 ms  | 33 ms   | First-light; pre-joint-query DSL.                              |
+| 2026-05-20 | dev machine (CachyOS) | v0.1.1  | 0.069 ms | 0.39 ms | 4.35 ms | **Milestone HIT.** Joint `(Mut<A>, &B)` query DSL (ADR-033 §1).|
+
+## Milestone closure (2026-05-20)
+
+The 1 M-entity / 60 FPS milestone is **closed**. The follow-up landed the
+three joint `WorldQuery` impls — `(Mut<A>, &B)`, `(&A, Mut<B>)`,
+`(Mut<A>, Mut<B>)` — that ADR-033 named as the closer. The bench's
+`motion` system rewrote to one archetype-stream walk:
+
+```rust
+for (_e, p, v) in w.query::<(Mut<Position>, &Velocity)>().iter() {
+    p.x += v.dx;
+    p.y += v.dy;
+    p.z += v.dz;
+}
+```
+
+That single change took the 1M sequential frame from ~33 ms to 4.35 ms
+median — a 7.6× speedup with the same correctness story (replay-parity
+oracle still green at every worker count). The 24 MiB per-frame Vec
+allocation and the 1M per-row `get_mut::<Position>(e)` hash-lookups are
+gone; the new path is a tight two-pointer bump loop over disjoint
+column slices.
+
+| Scale | Sequential (post-fix) | Parallel (post-fix) |
+|-------|----------------------:|--------------------:|
+| 10k   | 69 µs                 | ~70 µs              |
+| 100k  | 386 µs                | 489 µs              |
+| 1M    | **4.35 ms**           | 4.85 ms             |
+
+The parallel path is slightly slower than sequential here because the
+workload is a single system — `run_on` has no inter-system parallelism
+to exploit, only dispatch overhead. The million-entities bench exists
+to track *regressions* in `Schedule::run_on` on the hot path; for a
+real-world workload with multiple non-conflicting systems, the
+`parallel-schedule-baseline.md` numbers are the relevant ones.
