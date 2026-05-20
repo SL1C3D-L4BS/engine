@@ -36,8 +36,17 @@ jobs:
       - name: Show toolchain
         run: rustc --version && cargo --version
 
+      # ubuntu-24.04 ships neither `just` nor the cargo extras the workflow
+      # invokes; install via cargo so the toolchain pin from
+      # `rust-toolchain.toml` governs the build.
+      - name: Install just
+        run: cargo install just --locked
+
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
 
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
