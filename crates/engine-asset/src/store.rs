@@ -8,6 +8,68 @@
 
 use crate::hash::ContentHash;
 use engine_core::collections::HashMap;
+use engine_platform::mmap::MmapRo;
+use std::ops::Range;
+use std::sync::Arc;
+
+/// Where the bytes for one pak entry actually live.
+///
+/// Pak archives produced by [`Pak::builder`](crate::pak::Pak::builder) hold
+/// [`BlobSource::Owned`] blobs — the bytes sit in a [`Vec<u8>`] inside the
+/// pak. Pak archives opened via
+/// [`Pak::open_mmap`](crate::pak::Pak::open_mmap) hold [`BlobSource::Mapped`]
+/// blobs — every entry borrows a sub-range of one [`Arc<MmapRo>`] without
+/// copying. The variant is invisible to callers: both produce the same
+/// `&[u8]` from [`BlobSource::as_bytes`].
+pub enum BlobSource {
+    /// Bytes owned by the pak. Produced by builder / deserialization paths.
+    Owned(Vec<u8>),
+    /// Bytes borrowed from a shared memory-mapped file (ADR-029). The
+    /// [`MmapRo`] is co-owned by every [`BlobSource::Mapped`] inside the
+    /// same pak so the kernel mapping outlives every borrow.
+    Mapped {
+        /// Shared handle to the kernel mapping.
+        mmap: Arc<MmapRo>,
+        /// Sub-range of `mmap.as_bytes()` that this blob covers.
+        range: Range<usize>,
+    },
+}
+
+impl BlobSource {
+    /// Returns the blob bytes. Zero-copy for both variants.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            BlobSource::Owned(v) => v.as_slice(),
+            BlobSource::Mapped { mmap, range } => &mmap.as_bytes()[range.clone()],
+        }
+    }
+
+    /// Convenience: the blob's length in bytes.
+    pub fn len(&self) -> usize {
+        match self {
+            BlobSource::Owned(v) => v.len(),
+            BlobSource::Mapped { range, .. } => range.len(),
+        }
+    }
+
+    /// Convenience: `true` for a zero-length blob.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl std::fmt::Debug for BlobSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Owned(v) => f.debug_struct("Owned").field("len", &v.len()).finish(),
+            Self::Mapped { range, .. } => f
+                .debug_struct("Mapped")
+                .field("offset", &range.start)
+                .field("len", &range.len())
+                .finish(),
+        }
+    }
+}
 
 /// An in-memory, content-addressed blob store.
 ///

@@ -5,19 +5,35 @@
 //! is deterministic — entries and blobs are written in sorted order — so the
 //! same inputs always produce byte-identical pak files (spec IV.8).
 //!
+//! Two load paths produce a [`Pak`]:
+//!
+//! - [`Pak::from_bytes`] copies the pak bytes into [`Vec<u8>`] blobs — the
+//!   builder path, in-memory tests, and any caller that holds the pak in a
+//!   `Vec<u8>` already use this.
+//! - [`Pak::open_mmap`] memory-maps the file and stores each blob as a
+//!   sub-range borrow of the shared mapping (ADR-029). Zero copies; the
+//!   resident-set size scales with the working set, not the pak size.
+//!
+//! Both paths are transparent to the caller — [`Pak::get`] returns `&[u8]`
+//! either way.
+//!
 //! [`PakSet`] implements the Live Ops overlay model: a base pak plus update
 //! paks, resolved newest-first. A broken asset can be kill-switched by name
 //! without shipping a patch — game code never learns which pak an asset came
 //! from.
 
 use crate::hash::ContentHash;
+use crate::store::BlobSource;
+use engine_platform::mmap::MmapRo;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"ENGNPAK1";
 const FORMAT_VERSION: u32 = 1;
 
 /// An error encountered while decoding a [`Pak`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PakError {
     /// The magic number did not match — not a pak file.
     BadMagic,
@@ -27,14 +43,47 @@ pub enum PakError {
     Truncated,
     /// A blob's bytes did not match its declared content hash.
     IntegrityFailure,
+    /// A declared blob range extends past the end of the backing file. Only
+    /// raised by [`Pak::open_mmap`]; an mmap-time check guards against
+    /// SIGBUS faults that would otherwise occur on first-touch.
+    OutOfBounds,
+    /// An I/O error opening or mapping the pak file. Carried as a message
+    /// to keep [`PakError`] cheap to `Clone`.
+    Io(String),
+}
+
+impl From<std::io::Error> for PakError {
+    fn from(e: std::io::Error) -> Self {
+        PakError::Io(e.to_string())
+    }
 }
 
 /// A content-addressed asset archive.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct Pak {
     entries: BTreeMap<String, ContentHash>,
-    blobs: BTreeMap<ContentHash, Vec<u8>>,
+    blobs: BTreeMap<ContentHash, BlobSource>,
 }
+
+impl PartialEq for Pak {
+    fn eq(&self, other: &Self) -> bool {
+        if self.entries != other.entries {
+            return false;
+        }
+        if self.blobs.len() != other.blobs.len() {
+            return false;
+        }
+        for (h, src) in &self.blobs {
+            match other.blobs.get(h) {
+                Some(o) if o.as_bytes() == src.as_bytes() => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for Pak {}
 
 /// Accumulates entries into a [`Pak`].
 #[derive(Debug, Default)]
@@ -56,7 +105,10 @@ impl PakBuilder {
         let bytes = bytes.into();
         let hash = ContentHash::of(&bytes);
         self.pak.entries.insert(name.into(), hash);
-        self.pak.blobs.entry(hash).or_insert(bytes);
+        self.pak
+            .blobs
+            .entry(hash)
+            .or_insert_with(|| BlobSource::Owned(bytes));
         hash
     }
 
@@ -75,7 +127,7 @@ impl Pak {
     /// Borrows the bytes of the entry `name`.
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         let hash = self.entries.get(name)?;
-        self.blobs.get(hash).map(Vec::as_slice)
+        self.blobs.get(hash).map(BlobSource::as_bytes)
     }
 
     /// The content hash of the entry `name`.
@@ -118,9 +170,10 @@ impl Pak {
 
         out.extend_from_slice(&(self.blobs.len() as u32).to_le_bytes());
         for (hash, blob) in &self.blobs {
+            let bytes = blob.as_bytes();
             out.extend_from_slice(hash.as_bytes());
-            out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
-            out.extend_from_slice(blob);
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(bytes);
         }
         out
     }
@@ -155,7 +208,76 @@ impl Pak {
             if ContentHash::of(blob) != hash {
                 return Err(PakError::IntegrityFailure);
             }
-            blobs.insert(hash, blob.to_vec());
+            blobs.insert(hash, BlobSource::Owned(blob.to_vec()));
+        }
+
+        Ok(Self { entries, blobs })
+    }
+
+    /// Memory-maps a pak file (ADR-029). Each blob is exposed as a
+    /// zero-copy borrow into the shared [`MmapRo`].
+    ///
+    /// Every declared `(offset, len)` is validated against the file's
+    /// length *before* the mapping is indexed, so a truncated pak yields
+    /// [`PakError::Truncated`] or [`PakError::OutOfBounds`] rather than a
+    /// SIGBUS at first-touch. The blob's [`ContentHash`] is also verified
+    /// — the hash check costs a single sequential read but converts
+    /// silent corruption into a [`PakError::IntegrityFailure`] result.
+    pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self, PakError> {
+        let mmap = Arc::new(MmapRo::open(path.as_ref())?);
+        let bytes = mmap.as_bytes();
+        let file_len = bytes.len();
+
+        let mut reader = Reader::new(bytes);
+        if reader.take(8).ok_or(PakError::Truncated)? != MAGIC {
+            return Err(PakError::BadMagic);
+        }
+        let version = reader.u32().ok_or(PakError::Truncated)?;
+        if version != FORMAT_VERSION {
+            return Err(PakError::UnsupportedVersion(version));
+        }
+
+        let mut entries = BTreeMap::new();
+        let entry_count = reader.u32().ok_or(PakError::Truncated)?;
+        for _ in 0..entry_count {
+            let name_len = reader.u32().ok_or(PakError::Truncated)? as usize;
+            let name = reader.take(name_len).ok_or(PakError::Truncated)?;
+            let name = std::str::from_utf8(name).map_err(|_| PakError::Truncated)?;
+            let hash = reader.hash().ok_or(PakError::Truncated)?;
+            entries.insert(name.to_string(), hash);
+        }
+
+        let mut blobs: BTreeMap<ContentHash, BlobSource> = BTreeMap::new();
+        let blob_count = reader.u32().ok_or(PakError::Truncated)?;
+        for _ in 0..blob_count {
+            let hash = reader.hash().ok_or(PakError::Truncated)?;
+            let blob_len = reader.u32().ok_or(PakError::Truncated)? as usize;
+            // Reader::take both validates the bounds and advances the
+            // cursor — Truncated for a header that names a body past EOF.
+            let offset = reader.pos;
+            // Double-check against the file length explicitly. `Reader`
+            // already does this for `data: &[u8]` slices, but the explicit
+            // check lets us return `OutOfBounds` distinctly from a
+            // pure header-truncation, which is the more informative
+            // failure mode for an mmap'd file.
+            if offset
+                .checked_add(blob_len)
+                .map(|end| end > file_len)
+                .unwrap_or(true)
+            {
+                return Err(PakError::OutOfBounds);
+            }
+            let blob = reader.take(blob_len).ok_or(PakError::Truncated)?;
+            if ContentHash::of(blob) != hash {
+                return Err(PakError::IntegrityFailure);
+            }
+            blobs.insert(
+                hash,
+                BlobSource::Mapped {
+                    mmap: Arc::clone(&mmap),
+                    range: offset..offset + blob_len,
+                },
+            );
         }
 
         Ok(Self { entries, blobs })

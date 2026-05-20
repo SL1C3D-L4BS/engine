@@ -60,6 +60,18 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against raw mmap outside engine-platform::mmap (ADR-029)
+        run: |
+          # The mmap syscall lives in exactly one file. Anywhere else,
+          # including engine-asset, must route through MmapRo so the
+          # munmap-on-drop and length-bounds invariants stay in one place.
+          # Allowlist: `crates/engine-platform/src/mmap.rs` only.
+          if grep -rnE 'libc::mmap|libc::munmap|libc::madvise' crates \
+              | grep -v 'crates/engine-platform/src/mmap.rs'; then
+            echo "::error::Use engine_platform::mmap::MmapRo — see ADR-029"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
 

@@ -54,6 +54,13 @@ cache-baseline-with-counters:
 hashmap-baseline:
     cargo bench -p engine-core --bench collections
 
+# Refresh the mmap'd-pak loader baseline (ADR-029). Builds a 256 MiB synthetic
+# pak (~10 000 blobs) on tmpfs and compares Pak::from_bytes(fs::read(path))
+# against Pak::open_mmap(path). Commit the summary to
+# `docs/observatory/mmap-asset-baseline.md`.
+mmap-baseline:
+    cargo run --release -p engine-asset --example mmap_baseline
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"
