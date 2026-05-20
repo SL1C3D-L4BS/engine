@@ -323,6 +323,7 @@ name = "engine-asset"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
+ "engine-core",
  "engine-platform",
  "sha2",
 ]

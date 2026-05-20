@@ -9,6 +9,9 @@
 //! - [`rng`] — BLAKE3-keyed deterministic random numbers (spec IV.2).
 //! - [`alloc`] — linear, ring, pool, and general-purpose arena allocators
 //!   under the uniform [`alloc::Arena`] accounting trait.
+//! - [`collections`] — owned Robin Hood hash map and its two hashers
+//!   (ADR-028). Replaces [`std::collections::HashMap`] across the engine
+//!   crates so the probe path is owned and tail-latency is bounded.
 //! - [`telemetry`] — the owned span / counter / gauge / event primitives and
 //!   the per-thread ring buffer (spec X.1–X.3).
 //!
@@ -19,6 +22,7 @@
 //! pins this with a committed golden digest.
 
 pub mod alloc;
+pub mod collections;
 pub mod ecs;
 pub mod rng;
 pub mod telemetry;

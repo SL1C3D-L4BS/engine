@@ -16,5 +16,9 @@ criterion = { workspace = true }
 name = "alloc"
 harness = false
 
+[[bench]]
+name = "collections"
+harness = false
+
 [lints]
 workspace = true

@@ -48,6 +48,18 @@ jobs:
       - name: Install cargo-nextest
         run: cargo install cargo-nextest --locked
 
+      - name: Guard against std::collections::HashMap in owned crates (ADR-028)
+        run: |
+          # Phase 2 own-the-substrate: engine-core and engine-asset library
+          # source must use engine_core::collections::HashMap, not std's
+          # SwissTable. Tests and benches stay free to compare against std.
+          if grep -rnE 'std::collections::HashMap|use std::collections::HashMap' \
+              crates/engine-core/src \
+              crates/engine-asset/src; then
+            echo "::error::Use engine_core::collections::HashMap instead of std's — see ADR-028"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
 

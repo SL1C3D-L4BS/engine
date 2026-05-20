@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+engine-core = { workspace = true }
 engine-platform = { workspace = true }
 sha2 = "0.10"
 ed25519-dalek = "2"

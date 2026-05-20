@@ -7,9 +7,14 @@
 //! cache layers on later without changing this API.
 
 use crate::hash::ContentHash;
-use std::collections::HashMap;
+use engine_core::collections::HashMap;
 
 /// An in-memory, content-addressed blob store.
+///
+/// The blob lookup is the owned Robin Hood [`HashMap`] (ADR-028) with the
+/// default [`FastHasher`](engine_core::collections::FastHasher) — content
+/// hashes are already random-looking 256-bit values so the fast multiplicative
+/// hasher gives the best probe distribution for the smallest cost.
 #[derive(Debug, Default)]
 pub struct ContentStore {
     blobs: HashMap<ContentHash, Vec<u8>>,
@@ -31,11 +36,10 @@ impl ContentStore {
         let bytes = bytes.into();
         let hash = ContentHash::of(&bytes);
         self.inserts += 1;
-        match self.blobs.entry(hash) {
-            std::collections::hash_map::Entry::Occupied(_) => self.cache_hits += 1,
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(bytes);
-            }
+        if self.blobs.contains_key(&hash) {
+            self.cache_hits += 1;
+        } else {
+            self.blobs.insert(hash, bytes);
         }
         hash
     }

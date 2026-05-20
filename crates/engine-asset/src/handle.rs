@@ -13,8 +13,8 @@
 //! [`AssetServer::reload`].
 
 use crate::pak::PakSet;
+use engine_core::collections::HashMap;
 use std::any::Any;
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 

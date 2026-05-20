@@ -48,6 +48,12 @@ cache-baseline:
 cache-baseline-with-counters:
     cargo run --release -p cache-observatory -- --with-perf-counters
 
+# Refresh the Robin Hood hash-map criterion baseline (ADR-028). Bench numbers
+# land in `target/criterion/`; commit summary numbers to
+# `docs/observatory/hashmap-baseline.md`.
+hashmap-baseline:
+    cargo bench -p engine-core --bench collections
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

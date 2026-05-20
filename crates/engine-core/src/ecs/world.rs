@@ -3,15 +3,31 @@
 use super::Component;
 use super::entity::{Entity, EntityAllocator};
 use super::storage::{AnyColumn, ComponentColumn};
+use crate::collections::{DeterministicHasher, FastHasher, HashMap};
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
 
 /// The ECS world: entities, their components, and global resources.
-#[derive(Default)]
+///
+/// The per-archetype component column lookup uses the [`FastHasher`] — the
+/// `TypeId` keys are already well-distributed and the only call shape is a
+/// point lookup. The resource lookup uses the [`DeterministicHasher`]; while
+/// no current system iterates the resource keys, the deterministic-hasher
+/// choice insures the cross-arch frame digest against a future system that
+/// might (ADR-028).
 pub struct World {
     entities: EntityAllocator,
-    columns: HashMap<TypeId, Box<dyn AnyColumn>>,
-    resources: HashMap<TypeId, Box<dyn Any>>,
+    columns: HashMap<TypeId, Box<dyn AnyColumn>, FastHasher>,
+    resources: HashMap<TypeId, Box<dyn Any>, DeterministicHasher>,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self {
+            entities: EntityAllocator::default(),
+            columns: HashMap::with_hasher(FastHasher::new()),
+            resources: HashMap::with_hasher(DeterministicHasher::new()),
+        }
+    }
 }
 
 impl World {
@@ -187,9 +203,14 @@ impl World {
     }
 
     fn column_mut<T: Component>(&mut self) -> &mut ComponentColumn<T> {
+        let id = TypeId::of::<T>();
+        if !self.columns.contains_key(&id) {
+            self.columns
+                .insert(id, Box::new(ComponentColumn::<T>::new(T::STORAGE)));
+        }
         self.columns
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(ComponentColumn::<T>::new(T::STORAGE)))
+            .get_mut(&id)
+            .expect("column was just inserted")
             .as_any_mut()
             .downcast_mut::<ComponentColumn<T>>()
             .expect("column concrete type always matches its TypeId key")
