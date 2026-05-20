@@ -1,0 +1,25 @@
+[package]
+name = "cache-observatory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# A small CLI that measures cache behaviour for the engine's hot data types
+# (spec XXI, "SILICON → C"). Owned arg parsing and timing — no third-party
+# dependencies (R-02). Linux-only; perf-counter integration is gated behind
+# a flag and falls back gracefully when the kernel rejects the syscall.
+
+[[bin]]
+name = "cache-observatory"
+path = "src/main.rs"
+
+[dependencies]
+engine-core = { workspace = true }
+engine-math = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

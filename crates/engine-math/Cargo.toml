@@ -6,3 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# Phase 1 SIMD parity oracle needs deterministic RNG; an engine-only,
+# Level-1 dependency. Not a runtime dependency — only present in tests.
+engine-core = { workspace = true }
+
+[lints]
+workspace = true

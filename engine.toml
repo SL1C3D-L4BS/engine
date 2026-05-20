@@ -3,7 +3,10 @@
 
 [platform]
 spec_version = "2.0"
-phase = "0"
+# Phase 1 (SILICON → C, spec Part XXI) closed: SIMD math, four arenas with
+# unified accounting, cache observatory CLI + baseline. Upper layers (render,
+# physics, audio, net, script, ai, editor, …) remain stubs for Phase 2+.
+phase = "2"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

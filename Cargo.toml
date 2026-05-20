@@ -6,6 +6,7 @@ resolver = "3"
 members = [
     "crates/*",
     "testbed/engine-raster",
+    "tools/cache-observatory",
 ]
 
 [workspace.package]
@@ -37,6 +38,15 @@ engine-api = { path = "crates/engine-api" }
 engine-plugin-api = { path = "crates/engine-plugin-api" }
 
 # --- third-party deps are added here as phases require them ---
+
+# Benchmarking. Dev-only — no engine code links to it (Phase 1, ADR-026).
+criterion = { version = "0.5", default-features = false }
+
+# Workspace-wide lints. The foundation crates opt in via `[lints] workspace =
+# true`; documentation is a deliverable (spec XX.6), so undocumented public
+# items fail the build.
+[workspace.lints.rust]
+missing_docs = "deny"
 
 # Determinism Contract (ADR-013): the simulation path is built with the
 # `sim` profile. The no-FMA codegen flag is applied via the build invocation

@@ -6,3 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# The `Reflect` derive lives in the macro crate; tests exercise it from here.
+engine-ecs-macro = { workspace = true }
+
+[lints]
+workspace = true

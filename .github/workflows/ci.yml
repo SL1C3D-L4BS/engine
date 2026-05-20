@@ -1,0 +1,82 @@
+# [ENGINE] platform — CI gate.
+#
+# This workflow is written to the GitHub Actions schema, which Forgejo Actions
+# also consumes — so it runs unchanged whether the repository's remote ends up
+# on GitHub or on the self-hosted Forgejo named in spec XVIII.14.
+#
+# Two jobs:
+#   gate         — build, test, lint, fmt, deny on x86-64.
+#   determinism  — runs the determinism oracles on x86-64 *and* aarch64, each
+#                  against the same committed golden files. Two architectures
+#                  agreeing with one golden proves cross-arch byte-equality
+#                  transitively (Determinism Contract, spec IV.2 / ADR-013).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# CI runners have no sccache; the wrapper from .cargo/config.toml must be
+# disabled or every cargo invocation fails trying to exec it.
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      # rust-toolchain.toml pins the channel and components; rustup honours it.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: CI gate (build, test, lint, fmt, deny)
+        run: just ci
+
+  determinism:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runners for both architectures. If an aarch64 runner is
+        # unavailable, swap to a QEMU-emulated x86-64 runner with
+        # `docker run --platform linux/arm64` — slower, but equivalent.
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The simulation path is built with FMA disabled (the `profile.sim` codegen
+    # flag) so transcendental and arithmetic results are bit-identical.
+    env:
+      RUSTFLAGS: "-C target-feature=-fma"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      - name: Guard against fused multiply-add in engine-math (ADR-023, ADR-027)
+        run: |
+          # Reject both the high-level `mul_add` and the SIMD-FMA intrinsics
+          # the Phase 1 SIMD wrapper could in principle reach for. Covers SSE
+          # `_mm_fma*` / `_mm_fms*` and NEON `vfma*` / `vfms*` / `vmla*` /
+          # `vmls*` — the older multiply-accumulate is contract-prone too.
+          if grep -rnE '\.mul_add\(|_mm_fma|_mm_fms|vfma|vfms|vmla|vmls' crates/engine-math/src; then
+            echo "::error::engine-math must not call FMA — see ADR-023 / ADR-027"
+            exit 1
+          fi
+
+      - name: Run the engine-math SIMD parity oracle
+        run: cargo test -p engine-math --test simd_parity
+
+      - name: engine-math determinism oracle
+        run: cargo test -p engine-math --test determinism
+
+      - name: engine-core determinism oracle
+        run: cargo test -p engine-core --test determinism
