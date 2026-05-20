@@ -3,9 +3,11 @@
 
 [platform]
 spec_version = "2.0"
-# Phase 1 (SILICON → C, spec Part XXI) closed: SIMD math, four arenas with
-# unified accounting, cache observatory CLI + baseline. Upper layers (render,
-# physics, audio, net, script, ai, editor, …) remain stubs for Phase 2+.
+# Phase 2 (LINUX SYSTEMS, spec Part XXI) closed: owned Robin Hood hash map
+# (ADR-028), mmap'd pak loader (ADR-029), sampling profiler (ADR-030).
+# `phase` stays at "2" until Phase 3 starts; bump when the next portfolio
+# lands. Upper layers (render, physics, audio, net, script, ai, editor, …)
+# remain stubs for Phase 3+.
 phase = "2"
 
 [determinism]

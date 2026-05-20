@@ -2,7 +2,7 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 1** (SILICON → C). The crate
+This repository is the monorepo through **Phase 2** (LINUX SYSTEMS). The crate
 tree, levels, and architecture follow the authoritative specification:
 
 > `~/Resources/documentation/ENGINE_SPECIFICATION_v2.0.md`
@@ -58,6 +58,34 @@ under the foundation:
 
 Each ships a verification oracle (spec R-02); the cross-architecture
 Determinism Contract is enforced by `.github/workflows/ci.yml` (`just
-determinism`). The upper layers (render, physics, audio, net, script, ai,
-editor, …) remain stubs and are built across the later phases — see spec
-Part XXI.
+determinism`).
+
+Phase 2 (LINUX SYSTEMS, spec Part XXI) added three portfolio deliverables
+that own the platform surface every later phase will sit on:
+
+- **Robin Hood hash map.** An owned open-addressed table with
+  backward-shift deletion in `engine_core::collections`, with two owned
+  hashers — `FastHasher` (FxHash-style multiplicative) for hot lookups
+  and `DeterministicHasher` (BLAKE3-keyed) for cross-arch reproducible
+  probe order. Replaces `std::collections::HashMap` across `engine-core`
+  and `engine-asset` (the ECS resource lookup uses the deterministic
+  variant; the rest use FastHasher). Parity oracle vs `std` and a naive
+  reference; baseline at `docs/observatory/hashmap-baseline.md`
+  (ADR-028).
+- **mmap'd asset loader.** `engine_platform::mmap::MmapRo` wraps
+  `libc::mmap` (POSIX-only, Linux/macOS; Windows returns `Unsupported`).
+  `engine_asset::Pak::open_mmap(path)` opens a pak archive zero-copy via
+  a `BlobSource::Mapped` enum that lets every entry borrow a sub-range
+  of one shared mapping. Truncated and out-of-bounds paks surface as
+  `PakError::Truncated` / `PakError::OutOfBounds` rather than SIGBUS.
+  Baseline: `docs/observatory/mmap-asset-baseline.md` (ADR-029).
+- **Sampling profiler.** Linux `perf_event_open` producer
+  (`engine_platform::sampler`) feeds a folded-stack consumer
+  (`engine_telemetry::profiler::SamplingProfiler`) that emits one
+  `Signal::Sample { stack_id, count }` per unique call chain. The
+  `tools/sampling-profiler/` CLI prints Brendan-Gregg-compatible folded
+  stack output. macOS/Windows compile to graceful-degradation stubs.
+  Baseline: `docs/observatory/profiler-baseline.md` (ADR-030).
+
+The upper layers (render, physics, audio, net, script, ai, editor, …)
+remain stubs and are built across the later phases — see spec Part XXI.
