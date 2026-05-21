@@ -153,6 +153,29 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against vendored interpreters / parser generators in engine-script (ADR-034)
+        run: |
+          # Phase 4 own-the-substrate: the sli compiler front-end is hand-
+          # written (lexer + Pratt parser + bottom-up checker + SSA IR).
+          # No parser generator, vendored interpreter, JIT, or LLVM
+          # binding is permitted anywhere under `crates/engine-script/`.
+          # The rejection list covers the families spec ADR-007 closes
+          # off: scripting languages (rlua / mlua), WASM hosts
+          # (wasmtime / wasmer), JITs / codegen libraries (cranelift /
+          # inkwell), and parser-combinator / generator crates (lalrpop /
+          # pest / nom / combine / chumsky).
+          # The doc-comment strip mirrors ADR-028 / ADR-029 — rustdoc
+          # cross-references like `[lalrpop]` should not trip the guard.
+          hits=$(grep -rnE '\brlua\b|\bmlua\b|\bwasmtime\b|\bwasmer\b|\bcranelift\b|\binkwell\b|\blalrpop\b|\bpest\b|\bnom\b|\bcombine\b|\bchumsky\b' crates/engine-script \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Owned VM only — see ADR-034 (no rlua/mlua/wasmtime/wasmer/cranelift/inkwell/lalrpop/pest/nom/combine/chumsky in engine-script)"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
 
@@ -224,3 +247,12 @@ jobs:
         # x86-64 and aarch64 — same property the Determinism Contract
         # demands of the math and golden tests above.
         run: cargo test -p engine-core --test replay_parity
+
+      - name: engine-script compile parity oracle (ADR-034)
+        # Phase 4 PR 1: compile every fixture in the sli corpus, take a
+        # BLAKE3 digest over the optimised-IR serialisation, and
+        # compare against the committed golden. Two arches agreeing
+        # with one golden proves cross-arch byte-equal bytecode
+        # emission transitively (same pattern as engine-math /
+        # engine-core).
+        run: cargo test -p engine-script --test compile_parity

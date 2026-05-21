@@ -411,6 +411,12 @@ version = "0.0.0"
 [[package]]
 name = "engine-script"
 version = "0.0.0"
+dependencies = [
+ "blake3",
+ "engine-core",
+ "engine-platform",
+ "engine-reflect",
+]
 
 [[package]]
 name = "engine-telemetry"

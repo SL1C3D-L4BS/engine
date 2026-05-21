@@ -5,4 +5,17 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
+# Level 1+ path deps. The compiler front-end relies on the owned hash map
+# (ADR-028) and the arena layer (ADR-026) — the AST and IR are arena-allocated
+# so a compilation round trip costs one bulk free, not N drop calls.
+engine-core = { workspace = true }
+engine-platform = { workspace = true }
+engine-reflect = { workspace = true }
+
+[dev-dependencies]
+# Cross-arch golden digests over the compiled corpus (ADR-034).
+blake3 = { workspace = true }

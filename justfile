@@ -118,6 +118,17 @@ million-entities-baseline:
 parallel-schedule-baseline:
     @echo "See docs/observatory/parallel-schedule-baseline.md for the manual harness."
 
+# Phase 4 PR 1: run the sli front-end oracles (ADR-034). Builds the
+# corpus, exercises the parser round-trip, the type checker, and the
+# IR optimiser, then compares the committed BLAKE3 golden over the
+# optimised IR. Cross-arch parity rides on this committed golden via
+# the determinism matrix.
+script-front-end:
+    cargo test -p engine-script --test compile_parity
+    cargo test -p engine-script --test parser
+    cargo test -p engine-script --test typeck
+    cargo test -p engine-script --test ir
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

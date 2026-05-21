@@ -43,6 +43,13 @@ engine-plugin-api = { path = "crates/engine-plugin-api" }
 # Benchmarking. Dev-only — no engine code links to it (Phase 1, ADR-026).
 criterion = { version = "0.5", default-features = false }
 
+# BLAKE3 — already a build-time hash for cross-arch goldens elsewhere
+# (engine-math determinism, sampling-profiler stack ids). Promoted to a
+# workspace dep in Phase 4 so the sli front-end's `tests/compile_parity.rs`
+# golden can take a digest over its compiled corpus without each crate
+# pinning its own version (ADR-034).
+blake3 = { version = "1", default-features = false }
+
 # Workspace-wide lints. The foundation crates opt in via `[lints] workspace =
 # true`; documentation is a deliverable (spec XX.6), so undocumented public
 # items fail the build.
