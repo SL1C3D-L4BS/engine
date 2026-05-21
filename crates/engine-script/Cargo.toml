@@ -15,6 +15,10 @@ workspace = true
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
 engine-reflect = { workspace = true }
+# Asset-pipeline integration (PR 2, ADR-035): `impl Asset for ScriptModule`
+# lives here so a compiled module ships through the content-addressed
+# pak pipeline alongside everything else (ADR-008).
+engine-asset = { workspace = true }
 
 [dev-dependencies]
 # Cross-arch golden digests over the compiled corpus (ADR-034).

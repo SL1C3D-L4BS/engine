@@ -413,6 +413,7 @@ name = "engine-script"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "engine-asset",
  "engine-core",
  "engine-platform",
  "engine-reflect",

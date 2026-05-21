@@ -32,22 +32,35 @@
 //! rlua / mlua / wasmtime / wasmer / cranelift / inkwell anywhere under
 //! `crates/engine-script/`.
 
+pub mod asset;
 pub mod ast;
+pub mod bytecode;
+pub mod codegen;
 pub mod consteval;
 pub mod diag;
 pub mod ext;
+pub mod ffi;
+pub mod gc;
 pub mod ir;
 pub mod lex;
 pub mod parse;
 pub mod resolve;
 pub mod source;
 pub mod typeck;
+pub mod verify;
+pub mod vm;
 
+pub use asset::ScriptModule;
 pub use ast::{Decl, Module, Type};
+pub use bytecode::{Module as Bytecode, Opcode};
 pub use diag::{Diagnostic, Diagnostics, Severity};
 pub use ext::{SourceKind, classify};
+pub use ffi::{Binding, CallTable, FfiFn};
+pub use gc::{GcConfig, GcHandle, GcStats, Heap};
 pub use ir::IrModule;
 pub use source::{FileId, Source, SourceMap, Span};
+pub use verify::{VerifyError, verify};
+pub use vm::{StopReason, Value, Vm};
 
 /// Side-table emitted by [`Compiler::compile`] alongside the compiled artefact.
 ///
@@ -88,8 +101,11 @@ impl std::error::Error for CompileError {}
 /// Result of [`Compiler::compile`].
 #[derive(Debug)]
 pub struct Compiled {
-    /// Optimised IR module.
+    /// Optimised IR module — the cross-arch golden in
+    /// `tests/compile_parity.rs` digests this.
     pub ir: IrModule,
+    /// Executable bytecode module — input to [`crate::vm::Vm`] (ADR-035).
+    pub bytecode: bytecode::Module,
     /// Symbol-keyed type information from the checker.
     pub types: typeck::TypeTable,
     /// Evaluated `const` bindings (spec IV.7 const-eval).
@@ -141,8 +157,10 @@ impl Compiler {
         };
         let mut ir = ir::lower(&module);
         ir::optimise(&mut ir);
+        let bytecode = codegen::lower(&module);
         Ok(Compiled {
             ir,
+            bytecode,
             types,
             consts,
             debug,

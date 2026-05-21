@@ -129,6 +129,23 @@ script-front-end:
     cargo test -p engine-script --test typeck
     cargo test -p engine-script --test ir
 
+# Phase 4 PR 2: run the sli VM + verifier + GC + FFI + TRAP-collision
+# oracles (ADR-035). The VM oracle's golden joins the determinism
+# matrix; the others are gate-job tests.
+script-vm-oracle:
+    cargo test -p engine-script --test vm_oracle
+    cargo test -p engine-script --test verifier
+    cargo test -p engine-script --test gc_oracle
+    cargo test -p engine-script --test codegen_no_trap
+    cargo test -p engine-script --test ffi
+
+# Phase 4 PR 2 informational: GC pause histogram over a 100k-object
+# / 10k-churn / 1k-tick load. Asserts the spec IV.7 sub-ms budget
+# once the generational variant lands; until then this recipe
+# prints the histogram without failing.
+script-gc-pause-oracle:
+    cargo test --release -p engine-script --test gc_pause_oracle -- --nocapture
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

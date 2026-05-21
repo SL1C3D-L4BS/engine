@@ -153,6 +153,29 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against TRAP opcode (0xFF) outside reserved files (ADR-035)
+        run: |
+          # The TRAP opcode is the debugger's breakpoint patch — only the
+          # bytecode definition, the verifier, and PR-3's debugger may
+          # mention the literal `0xFF`. Defence-in-depth backstop for the
+          # ADR-035 four-layer impossibility argument; the type system
+          # already pins the architectural invariant, and the runtime
+          # fuzz oracle (`tests/codegen_no_trap.rs`) is the last
+          # belt-and-braces check. This grep adds a static one: a stray
+          # `0xFF` literal in a fresh codegen file would be a red flag.
+          hits=$(grep -rnE '0xFF\b' crates/engine-script/src \
+              | grep -v -e 'crates/engine-script/src/bytecode.rs' \
+                       -e 'crates/engine-script/src/verify.rs' \
+                       -e 'crates/engine-script/src/debug.rs' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Literal 0xFF reserved for the TRAP opcode (ADR-035) — bytecode.rs / verify.rs / debug.rs only"
+            exit 1
+          fi
+
       - name: Guard against vendored interpreters / parser generators in engine-script (ADR-034)
         run: |
           # Phase 4 own-the-substrate: the sli compiler front-end is hand-
@@ -256,3 +279,17 @@ jobs:
         # emission transitively (same pattern as engine-math /
         # engine-core).
         run: cargo test -p engine-script --test compile_parity
+
+      - name: engine-script VM oracle (ADR-035)
+        # Phase 4 PR 2: execute the eleven curated programs end-to-end
+        # in the register VM, take a BLAKE3 digest over (name, result)
+        # pairs, and compare against the committed golden. Same
+        # cross-arch contract as the compile-parity oracle.
+        run: cargo test -p engine-script --test vm_oracle
+
+      - name: engine-script codegen-no-trap fuzz oracle (ADR-035)
+        # 500 deterministic synthetic programs + the corpus; asserts no
+        # compiled function emits a TRAP opcode byte (0xFF). Runtime
+        # backstop for the four-layer TRAP-collision impossibility
+        # argument (ADR-035).
+        run: cargo test -p engine-script --test codegen_no_trap
