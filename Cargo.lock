@@ -344,6 +344,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-debug"
+version = "0.0.0"
+dependencies = [
+ "engine-core",
+ "engine-script",
+]
+
+[[package]]
 name = "engine-ecs-macro"
 version = "0.0.0"
 dependencies = [
@@ -409,6 +417,13 @@ name = "engine-render"
 version = "0.0.0"
 
 [[package]]
+name = "engine-repl"
+version = "0.0.0"
+dependencies = [
+ "engine-script",
+]
+
+[[package]]
 name = "engine-script"
 version = "0.0.0"
 dependencies = [
@@ -417,6 +432,7 @@ dependencies = [
  "engine-core",
  "engine-platform",
  "engine-reflect",
+ "engine-telemetry",
 ]
 
 [[package]]

@@ -34,9 +34,12 @@
 
 pub mod asset;
 pub mod ast;
+pub mod breakpoints_toml;
 pub mod bytecode;
 pub mod codegen;
 pub mod consteval;
+pub mod debug;
+pub mod debug_proto;
 pub mod diag;
 pub mod ext;
 pub mod ffi;
@@ -44,23 +47,30 @@ pub mod gc;
 pub mod ir;
 pub mod lex;
 pub mod parse;
+pub mod reload;
+pub mod repl;
 pub mod resolve;
 pub mod source;
 pub mod typeck;
 pub mod verify;
 pub mod vm;
+pub mod watch_expr;
 
 pub use asset::ScriptModule;
 pub use ast::{Decl, Module, Type};
 pub use bytecode::{Module as Bytecode, Opcode};
+pub use debug::{Breakpoint, BreakpointId, Debugger};
 pub use diag::{Diagnostic, Diagnostics, Severity};
 pub use ext::{SourceKind, classify};
 pub use ffi::{Binding, CallTable, FfiFn};
 pub use gc::{GcConfig, GcHandle, GcStats, Heap};
 pub use ir::IrModule;
+pub use reload::{Event as ReloadEvent, Reloader};
+pub use repl::Repl;
 pub use source::{FileId, Source, SourceMap, Span};
 pub use verify::{VerifyError, verify};
 pub use vm::{StopReason, Value, Vm};
+pub use watch_expr::{WatchError, validate as validate_watch};
 
 /// Side-table emitted by [`Compiler::compile`] alongside the compiled artefact.
 ///
@@ -157,7 +167,7 @@ impl Compiler {
         };
         let mut ir = ir::lower(&module);
         ir::optimise(&mut ir);
-        let bytecode = codegen::lower(&module);
+        let bytecode = codegen::lower(&module, source);
         Ok(Compiled {
             ir,
             bytecode,

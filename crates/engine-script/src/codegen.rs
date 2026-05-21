@@ -18,10 +18,15 @@ use crate::ast::{
     BinOp, Block, Decl, Expr, ExprKind, FnDecl, Lit, Module as AstModule, Stmt, StmtKind, UnOp,
 };
 use crate::bytecode::{Const, FunctionBytecode, Module, ModuleBuilder, Opcode};
+use crate::source::{Source, Span};
 use engine_core::collections::HashMap;
 
 /// Lowers a type-checked AST module into bytecode.
-pub fn lower(ast: &AstModule) -> Module {
+///
+/// `source` is the underlying `Source` the module was parsed from —
+/// codegen converts AST spans into 1-based line numbers for the
+/// `line_for_pc` side-table the debugger walks (ADR-036).
+pub fn lower(ast: &AstModule, source: &Source) -> Module {
     let mut builder = ModuleBuilder::new();
     // Pass 1: register every function name so callers can resolve ids
     // before bodies are compiled (recursive calls). Ids are indices into
@@ -38,7 +43,7 @@ pub fn lower(ast: &AstModule) -> Module {
     // Pass 2: compile each function.
     for d in &ast.decls {
         if let Decl::Fn(f) = d {
-            let bc = compile_fn(f, &name_to_id, &mut builder);
+            let bc = compile_fn(f, &name_to_id, &mut builder, source);
             builder.push_function(bc);
         }
     }
@@ -48,6 +53,7 @@ pub fn lower(ast: &AstModule) -> Module {
 struct Compiler<'a> {
     builder: &'a mut ModuleBuilder,
     fn_index: &'a HashMap<String, u16>,
+    source: &'a Source,
     code: Vec<u8>,
     line_for_pc: Vec<u32>,
     next_reg: u16,
@@ -55,15 +61,36 @@ struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(builder: &'a mut ModuleBuilder, fn_index: &'a HashMap<String, u16>) -> Self {
+    fn new(
+        builder: &'a mut ModuleBuilder,
+        fn_index: &'a HashMap<String, u16>,
+        source: &'a Source,
+    ) -> Self {
         Self {
             builder,
             fn_index,
+            source,
             code: Vec::new(),
             line_for_pc: Vec::new(),
             next_reg: 0,
             scopes: vec![HashMap::new()],
         }
+    }
+
+    /// 1-based source line for a span. Codegen calls this at every
+    /// opcode emit so the debugger's `line_for_pc` table is dense
+    /// (ADR-036). A zero-`lo` span (synthesised opcode) falls back to
+    /// line 0, which the debugger treats as "no source line."
+    fn line_for(&self, span: Span) -> u32 {
+        if span.lo == 0 && span.hi == 0 {
+            return 0;
+        }
+        self.source.line_col(span.lo).0
+    }
+
+    fn emit_at(&mut self, op: Opcode, span: Span) {
+        let line = self.line_for(span);
+        self.emit(op, line);
     }
 
     fn alloc_reg(&mut self) -> u8 {
@@ -134,24 +161,26 @@ fn compile_fn(
     f: &FnDecl,
     fn_index: &HashMap<String, u16>,
     builder: &mut ModuleBuilder,
+    source: &Source,
 ) -> FunctionBytecode {
-    let mut c = Compiler::new(builder, fn_index);
+    let mut c = Compiler::new(builder, fn_index, source);
     for p in &f.params {
         let r = c.alloc_reg();
         c.bind(p.name.clone(), r);
     }
     let body_value = compile_block(&mut c, &f.body);
     // If the body produced a tail value, emit a return for it; else nil.
+    let tail_span = f.body.tail.as_ref().map(|e| e.span).unwrap_or(f.body.span);
     match body_value {
         Some(reg) => {
-            c.emit(Opcode::ReturnVal, 0);
+            c.emit_at(Opcode::ReturnVal, tail_span);
             c.emit_byte(reg);
         }
         None => {
             // The block ended with a `return ...` already, OR has no tail.
             // Emit an implicit `ReturnNil` as a backstop — verifier
             // requires it.
-            c.emit(Opcode::ReturnNil, 0);
+            c.emit_at(Opcode::ReturnNil, tail_span);
         }
     }
     FunctionBytecode {
@@ -184,7 +213,7 @@ fn compile_stmt(c: &mut Compiler, s: &Stmt) {
             if let ExprKind::Ident(name) = &target.kind
                 && let Some(r) = c.lookup(name)
             {
-                c.emit(Opcode::Move, 0);
+                c.emit_at(Opcode::Move, s.span);
                 c.emit_byte(r);
                 c.emit_byte(v);
             }
@@ -194,23 +223,23 @@ fn compile_stmt(c: &mut Compiler, s: &Stmt) {
             let _ = compile_expr(c, e);
         }
         StmtKind::Return(None) => {
-            c.emit(Opcode::ReturnNil, 0);
+            c.emit_at(Opcode::ReturnNil, s.span);
         }
         StmtKind::Return(Some(e)) => {
             let r = compile_expr(c, e);
-            c.emit(Opcode::ReturnVal, 0);
+            c.emit_at(Opcode::ReturnVal, s.span);
             c.emit_byte(r);
         }
         StmtKind::While(cond, body) => {
             let loop_start = c.code.len();
             let cond_reg = compile_expr(c, cond);
-            c.emit(Opcode::JmpIfFalse, 0);
+            c.emit_at(Opcode::JmpIfFalse, cond.span);
             c.emit_byte(cond_reg);
             let exit_patch = c.code.len();
             c.emit_i16(0); // placeholder
             compile_block(c, body);
             // Jump back to loop start.
-            c.emit(Opcode::Jmp, 0);
+            c.emit_at(Opcode::Jmp, s.span);
             let here = c.code.len() as isize + 2;
             let back_offset = loop_start as isize - here;
             c.emit_i16(back_offset as i16);
@@ -231,25 +260,25 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
         ExprKind::Lit(l) => {
             let dst = c.alloc_reg();
             match l {
-                Lit::Nil => c.emit(Opcode::ConstNil, 0),
-                Lit::Bool(true) => c.emit(Opcode::ConstTrue, 0),
-                Lit::Bool(false) => c.emit(Opcode::ConstFalse, 0),
+                Lit::Nil => c.emit_at(Opcode::ConstNil, e.span),
+                Lit::Bool(true) => c.emit_at(Opcode::ConstTrue, e.span),
+                Lit::Bool(false) => c.emit_at(Opcode::ConstFalse, e.span),
                 Lit::Int(v) => {
-                    c.emit(Opcode::ConstInt, 0);
+                    c.emit_at(Opcode::ConstInt, e.span);
                     let idx = c.builder.intern(Const::Int(*v));
                     c.emit_byte(dst);
                     c.emit_u16(idx);
                     return dst;
                 }
                 Lit::Float(b) => {
-                    c.emit(Opcode::ConstFloat, 0);
+                    c.emit_at(Opcode::ConstFloat, e.span);
                     let idx = c.builder.intern(Const::Float(*b));
                     c.emit_byte(dst);
                     c.emit_u16(idx);
                     return dst;
                 }
                 Lit::Str(s) => {
-                    c.emit(Opcode::ConstStr, 0);
+                    c.emit_at(Opcode::ConstStr, e.span);
                     let idx = c.builder.intern(Const::Str(s.clone()));
                     c.emit_byte(dst);
                     c.emit_u16(idx);
@@ -269,7 +298,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
                 // Synthesise a nil placeholder; the type checker would
                 // already have flagged this.
                 let dst = c.alloc_reg();
-                c.emit(Opcode::ConstNil, 0);
+                c.emit_at(Opcode::ConstNil, e.span);
                 c.emit_byte(dst);
                 dst
             }
@@ -279,7 +308,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
             let rr = compile_expr(c, r);
             let dst = c.alloc_reg();
             let opc = binop_opcode(*op);
-            c.emit(opc, 0);
+            c.emit_at(opc, e.span);
             c.emit_byte(dst);
             c.emit_byte(lr);
             c.emit_byte(rr);
@@ -292,7 +321,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
                 UnOp::Neg => Opcode::Neg,
                 UnOp::Not => Opcode::Not,
             };
-            c.emit(opc, 0);
+            c.emit_at(opc, e.span);
             c.emit_byte(dst);
             c.emit_byte(xr);
             dst
@@ -303,7 +332,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
             if let ExprKind::Ident(name) = &callee.kind
                 && let Some(id) = c.fn_index.get(name)
             {
-                c.emit(Opcode::Call, 0);
+                c.emit_at(Opcode::Call, e.span);
                 c.emit_byte(dst);
                 c.emit_u16(*id);
                 c.emit_byte(arg_regs.len() as u8);
@@ -314,7 +343,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
             }
             // Unknown name — emit nil for now. PR 3 will route this
             // through the FFI table.
-            c.emit(Opcode::ConstNil, 0);
+            c.emit_at(Opcode::ConstNil, e.span);
             c.emit_byte(dst);
             dst
         }
@@ -324,19 +353,19 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
             // Lower to a nil placeholder; the type checker has already
             // validated the shape statically.
             let dst = c.alloc_reg();
-            c.emit(Opcode::ConstNil, 0);
+            c.emit_at(Opcode::ConstNil, e.span);
             c.emit_byte(dst);
             dst
         }
         ExprKind::Closure(_, _) => {
             let dst = c.alloc_reg();
-            c.emit(Opcode::ConstNil, 0);
+            c.emit_at(Opcode::ConstNil, e.span);
             c.emit_byte(dst);
             dst
         }
         ExprKind::Block(b) => compile_block(c, b).unwrap_or_else(|| {
             let dst = c.alloc_reg();
-            c.emit(Opcode::ConstNil, 0);
+            c.emit_at(Opcode::ConstNil, e.span);
             c.emit_byte(dst);
             dst
         }),
@@ -350,7 +379,7 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
 
 fn compile_if(c: &mut Compiler, cond: &Expr, then: &Block, else_: Option<&Block>, out: Option<u8>) {
     let cond_reg = compile_expr(c, cond);
-    c.emit(Opcode::JmpIfFalse, 0);
+    c.emit_at(Opcode::JmpIfFalse, cond.span);
     c.emit_byte(cond_reg);
     let to_else_patch = c.code.len();
     c.emit_i16(0);
@@ -358,12 +387,12 @@ fn compile_if(c: &mut Compiler, cond: &Expr, then: &Block, else_: Option<&Block>
     if let (Some(dst), Some(tr)) = (out, then_tail)
         && dst != tr
     {
-        c.emit(Opcode::Move, 0);
+        c.emit_at(Opcode::Move, then.span);
         c.emit_byte(dst);
         c.emit_byte(tr);
     }
     // Unconditional jump past the else.
-    c.emit(Opcode::Jmp, 0);
+    c.emit_at(Opcode::Jmp, then.span);
     let to_end_patch = c.code.len();
     c.emit_i16(0);
     // else label.
@@ -375,12 +404,12 @@ fn compile_if(c: &mut Compiler, cond: &Expr, then: &Block, else_: Option<&Block>
         if let (Some(dst), Some(er)) = (out, etail)
             && dst != er
         {
-            c.emit(Opcode::Move, 0);
+            c.emit_at(Opcode::Move, eb.span);
             c.emit_byte(dst);
             c.emit_byte(er);
         }
     } else if let Some(dst) = out {
-        c.emit(Opcode::ConstNil, 0);
+        c.emit_at(Opcode::ConstNil, cond.span);
         c.emit_byte(dst);
     }
     // end label.

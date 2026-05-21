@@ -1,0 +1,17 @@
+[package]
+name = "engine-repl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "engine-repl"
+path = "src/main.rs"
+
+[dependencies]
+engine-script = { workspace = true }

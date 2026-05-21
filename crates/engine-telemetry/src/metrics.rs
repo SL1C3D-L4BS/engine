@@ -76,6 +76,18 @@ impl MetricsRegistry {
                     .entry("sampling_profiler_samples_total".to_string())
                     .or_insert(0) += count;
             }
+            Signal::ScriptBreakpointHit { .. } => {
+                *self
+                    .counters
+                    .entry("sli_script_breakpoint_hits_total".to_string())
+                    .or_insert(0) += 1;
+            }
+            Signal::ScriptException { .. } => {
+                *self
+                    .counters
+                    .entry("sli_script_exceptions_total".to_string())
+                    .or_insert(0) += 1;
+            }
         }
     }
 

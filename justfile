@@ -146,6 +146,18 @@ script-vm-oracle:
 script-gc-pause-oracle:
     cargo test --release -p engine-script --test gc_pause_oracle -- --nocapture
 
+# Phase 4 PR 3: hot-reload + debugger wire protocol + breakpoint
+# persistence + watch-expression purity + REPL line gathering +
+# editor-bridge protocol contract (ADR-036). The protocol oracle
+# and the editor-bridge run join the determinism matrix.
+script-debug-oracle:
+    cargo test -p engine-script --test debug_protocol
+    cargo test -p engine-script --test hot_reload
+    cargo test -p engine-script --test breakpoint_persistence
+    cargo test -p engine-script --test watch_expr_safety
+    cargo test -p engine-repl
+    cargo test -p engine-debug
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

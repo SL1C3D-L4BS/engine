@@ -19,6 +19,9 @@ engine-reflect = { workspace = true }
 # lives here so a compiled module ships through the content-addressed
 # pak pipeline alongside everything else (ADR-008).
 engine-asset = { workspace = true }
+# Hot-reload (ADR-036) reuses engine_telemetry::ipc framing for the
+# debugger protocol envelope, so the script crate depends on it.
+engine-telemetry = { workspace = true }
 
 [dev-dependencies]
 # Cross-arch golden digests over the compiled corpus (ADR-034).

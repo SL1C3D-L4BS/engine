@@ -1,0 +1,22 @@
+[package]
+name = "engine-debug"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "engine-debug"
+path = "src/main.rs"
+
+[[example]]
+name = "editor-bridge"
+path = "examples/editor-bridge.rs"
+
+[dependencies]
+engine-script = { workspace = true }
+engine-core = { workspace = true }

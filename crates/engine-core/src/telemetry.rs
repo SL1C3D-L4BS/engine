@@ -103,6 +103,26 @@ pub enum Signal {
         /// drain.
         count: u64,
     },
+    /// A sli script breakpoint hit fired by the debugger (ADR-036).
+    ScriptBreakpointHit {
+        /// File id where the breakpoint is attached, as known to the
+        /// compiler's `SourceMap`.
+        file_id: u32,
+        /// 1-based line number inside `file_id`.
+        line: u32,
+        /// Fiber id (PR-3 ships single-fiber, so this is always `0`).
+        fiber_id: u32,
+    },
+    /// A sli script exception fired by the VM (ADR-036).
+    ScriptException {
+        /// File id where the exception originated.
+        file_id: u32,
+        /// 1-based line number inside `file_id`.
+        line: u32,
+        /// Interned message id resolvable through the editor's
+        /// localization table.
+        message_id: u32,
+    },
 }
 
 /// Slots in each thread's telemetry ring (spec X.3).

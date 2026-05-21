@@ -199,6 +199,41 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against vendored serialization / RPC crates in debugger protocol (ADR-036)
+        run: |
+          # Phase 4 PR 3 ships an owned binary wire protocol for the
+          # script debugger — explicitly NOT Microsoft DAP JSON. No
+          # serde, no serde_json, no bincode, no protobuf / rmp host
+          # may link under `crates/engine-script/`. The encoder lives
+          # in `debug_proto.rs` and owns its little-endian operand
+          # encoding; the round-trip oracle in
+          # `tests/debug_protocol.rs` pins every variant.
+          hits=$(grep -rnE '\bserde\b|\bserde_json\b|\bserde_derive\b|\bbincode\b|\bprost\b|\bprotobuf\b|\brmp\b' crates/engine-script \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Owned debugger wire protocol — see ADR-036 (no serde/serde_json/bincode/prost/protobuf/rmp in engine-script)"
+            exit 1
+          fi
+
+      - name: Guard against vendored line editors in REPL (ADR-036)
+        run: |
+          # Phase 4 PR 3's REPL is cooked-mode stdin only. The
+          # raw-mode termios + line-editor layer is the Phase-10
+          # editor's job. Until then the REPL stays portable and
+          # CI-friendly; no rustyline / reedline / linefeed link.
+          hits=$(grep -rnE '\brustyline\b|\breedline\b|\blinefeed\b' bin/engine-repl \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Cooked-mode REPL only — see ADR-036 (no rustyline/reedline/linefeed in bin/engine-repl)"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
 
@@ -293,3 +328,28 @@ jobs:
         # backstop for the four-layer TRAP-collision impossibility
         # argument (ADR-035).
         run: cargo test -p engine-script --test codegen_no_trap
+
+      - name: engine-script debugger protocol round-trip oracle (ADR-036)
+        # PR 3: encode every request, response, and event variant on
+        # the owned binary wire protocol, decode through `decode_frame`,
+        # and assert equality. Catches version-byte, tag-byte, and
+        # operand-encoding drift. Cross-arch parity rides on every
+        # operand being little-endian by construction.
+        run: cargo test -p engine-script --test debug_protocol
+
+      - name: engine-script hot-reload + breakpoint persistence oracles (ADR-036)
+        # PR 3: hot-reload runs the polling watcher backend
+        # deterministically. Breakpoint persistence pins the owned
+        # TOML writer/reader. Watch-expression safety pins the
+        # strict-deny purity verifier.
+        run: |
+          cargo test -p engine-script --test hot_reload
+          cargo test -p engine-script --test breakpoint_persistence
+          cargo test -p engine-script --test watch_expr_safety
+
+      - name: engine-debug editor-bridge protocol contract (ADR-036)
+        # PR 3: runs the `editor-bridge` example as a subprocess; the
+        # example exercises every protocol request / response / event
+        # variant against an in-process VM fixture. A clean exit is
+        # the proof that the Phase-10 editor's wire surface is intact.
+        run: cargo test -p engine-debug

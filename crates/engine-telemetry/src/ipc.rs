@@ -67,6 +67,26 @@ pub enum WireSignal {
         /// Number of times this chain was observed.
         count: u64,
     },
+    /// A sli script breakpoint hit. Mirror of
+    /// [`Signal::ScriptBreakpointHit`] (Phase 4 PR 3, ADR-036).
+    ScriptBreakpointHit {
+        /// File id where the breakpoint is attached.
+        file_id: u32,
+        /// 1-based line number.
+        line: u32,
+        /// Fiber id.
+        fiber_id: u32,
+    },
+    /// A sli script exception. Mirror of
+    /// [`Signal::ScriptException`] (Phase 4 PR 3, ADR-036).
+    ScriptException {
+        /// File id where the exception originated.
+        file_id: u32,
+        /// 1-based line number.
+        line: u32,
+        /// Interned message id.
+        message_id: u32,
+    },
 }
 
 impl WireSignal {
@@ -116,6 +136,24 @@ impl WireSignal {
             Signal::Sample { stack_id, count } => Self::Sample {
                 stack_id: *stack_id,
                 count: *count,
+            },
+            Signal::ScriptBreakpointHit {
+                file_id,
+                line,
+                fiber_id,
+            } => Self::ScriptBreakpointHit {
+                file_id: *file_id,
+                line: *line,
+                fiber_id: *fiber_id,
+            },
+            Signal::ScriptException {
+                file_id,
+                line,
+                message_id,
+            } => Self::ScriptException {
+                file_id: *file_id,
+                line: *line,
+                message_id: *message_id,
             },
         }
     }
@@ -352,6 +390,26 @@ fn encode_signal(signal: &WireSignal, out: &mut Vec<u8>) {
             out.extend_from_slice(&stack_id.to_le_bytes());
             out.extend_from_slice(&count.to_le_bytes());
         }
+        WireSignal::ScriptBreakpointHit {
+            file_id,
+            line,
+            fiber_id,
+        } => {
+            out.push(5);
+            out.extend_from_slice(&file_id.to_le_bytes());
+            out.extend_from_slice(&line.to_le_bytes());
+            out.extend_from_slice(&fiber_id.to_le_bytes());
+        }
+        WireSignal::ScriptException {
+            file_id,
+            line,
+            message_id,
+        } => {
+            out.push(6);
+            out.extend_from_slice(&file_id.to_le_bytes());
+            out.extend_from_slice(&line.to_le_bytes());
+            out.extend_from_slice(&message_id.to_le_bytes());
+        }
     }
 }
 
@@ -391,6 +449,16 @@ fn decode_signal(r: &mut Reader<'_>) -> Result<WireSignal, IpcError> {
         4 => WireSignal::Sample {
             stack_id: r.u64()?,
             count: r.u64()?,
+        },
+        5 => WireSignal::ScriptBreakpointHit {
+            file_id: r.u32()?,
+            line: r.u32()?,
+            fiber_id: r.u32()?,
+        },
+        6 => WireSignal::ScriptException {
+            file_id: r.u32()?,
+            line: r.u32()?,
+            message_id: r.u32()?,
         },
         _ => return Err(IpcError::BadTag),
     })
