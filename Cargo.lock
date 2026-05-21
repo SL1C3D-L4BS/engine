@@ -436,6 +436,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-shader"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "engine-asset",
+ "engine-core",
+]
+
+[[package]]
 name = "engine-telemetry"
 version = "0.0.0"
 dependencies = [

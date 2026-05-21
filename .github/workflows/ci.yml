@@ -218,6 +218,27 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against owned mini-Slang front-end (ADR-037)
+        run: |
+          # Phase 4 PR 4: spec ADR-003 names Slang as the source
+          # language, NOT as something the engine re-implements. The
+          # toolchain wraps the official `slangc` binary as a
+          # sandboxed subprocess. No HLSL / Slang parser, no shader
+          # compiler internals link under `tools/engine-shader/` —
+          # if you find yourself wanting one, write an ADR first.
+          # The list mirrors ADR-003's deferral set: naga (wgpu's
+          # internal compiler), shaderc/shaderc-rs (Google's
+          # libshaderc wrapper), spirv-tools, spirv-cross, glslang.
+          hits=$(grep -rnE '\bnaga\b|\bshaderc\b|\bshaderc_rs\b|\bspirv_tools\b|\bspirv_cross\b|\bglslang\b' tools/engine-shader \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Slang via slangc subprocess only — see ADR-037 (no naga/shaderc/spirv-tools/spirv-cross/glslang in tools/engine-shader)"
+            exit 1
+          fi
+
       - name: Guard against vendored line editors in REPL (ADR-036)
         run: |
           # Phase 4 PR 3's REPL is cooked-mode stdin only. The
@@ -353,3 +374,22 @@ jobs:
         # variant against an in-process VM fixture. A clean exit is
         # the proof that the Phase-10 editor's wire surface is intact.
         run: cargo test -p engine-debug
+
+      - name: engine-shader codec + target enum oracles (ADR-037)
+        # PR 4: pin the on-disk artefact bundle codec, target / stage
+        # tag stability, and the BLAKE3 digest invariants. These tests
+        # are pure-Rust and require no slangc binary — they run on
+        # every runner unconditionally.
+        run: |
+          cargo test -p engine-shader --test target_enum
+          cargo test -p engine-shader --test bundle_codec
+
+      - name: engine-shader reproducibility oracle (ADR-038)
+        # PR 4: compile the fixture against every available target,
+        # take a BLAKE3 digest per (entry, stage, target) pair, and
+        # compare against the committed golden. Skips targets whose
+        # downstream backend (e.g. DXIL's `dxcompiler`) is missing;
+        # the rest of the matrix still enforces. The slangc binary
+        # itself is *not* installed by this workflow — runners
+        # without slangc see a graceful skip with a printed warning.
+        run: cargo test -p engine-shader --test reproducibility

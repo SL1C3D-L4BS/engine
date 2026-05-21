@@ -158,6 +158,23 @@ script-debug-oracle:
     cargo test -p engine-repl
     cargo test -p engine-debug
 
+# Phase 4 PR 4: run the Slang shader toolchain oracles (ADR-037 /
+# ADR-038). target_enum + bundle_codec are pure-Rust and always run;
+# slangc_smoke + reproducibility require `slangc` installed (they
+# gracefully skip otherwise). The committed reproducibility golden
+# was generated under SLANGC_PIN.
+shader-toolchain:
+    cargo test -p engine-shader --test target_enum
+    cargo test -p engine-shader --test bundle_codec
+    cargo test -p engine-shader --test slangc_smoke
+    cargo test -p engine-shader --test reproducibility
+
+# Regenerate the engine-shader reproducibility golden. Run after a
+# deliberate SLANGC_PIN bump; commit the updated golden alongside
+# the bumped constant (ADR-038).
+shader-toolchain-update-golden:
+    ENGINE_GOLDEN_WRITE=1 cargo test -p engine-shader --test reproducibility
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

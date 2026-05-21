@@ -9,6 +9,7 @@ members = [
     "crates/*",
     "testbed/engine-raster",
     "tools/cache-observatory",
+    "tools/engine-shader",
     "tools/sampling-profiler",
 ]
 

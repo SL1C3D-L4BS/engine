@@ -1,0 +1,35 @@
+[package]
+name = "engine-shader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Phase 4 PR 4: Slang shader toolchain (ADR-037 / ADR-038).
+#
+# Wraps the official `slangc` binary as a sandboxed subprocess
+# (ADR-019 pattern). Targets: SPIR-V, WGSL, DXIL, MSL — plus a
+# `.refl.json` reflection side-table per artefact. Owned mini-Slang
+# is explicitly out of scope (spec ADR-003); the engine treats
+# `slangc` as the canonical Slang front-end and pins one version
+# (`SLANGC_PIN`) for reproducibility.
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "engine-shader"
+path = "src/main.rs"
+
+[dependencies]
+# Reproducibility digests: each artefact carries a BLAKE3 hash over
+# (target, entry, stage, bytes). The cross-arch reproducibility
+# oracle (`tests/reproducibility.rs`) checks the committed golden.
+blake3 = { workspace = true }
+# `impl Asset for ShaderArtifact` so a compiled shader rides the
+# content-addressed pak pipeline (ADR-008).
+engine-asset = { workspace = true }
+engine-core = { workspace = true }
