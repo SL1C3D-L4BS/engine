@@ -190,8 +190,18 @@ mod tests {
     #[test]
     fn write_if_closer_respects_depth() {
         let mut fb = Framebuffer::new(4, 4);
-        let red = Rgba8 { r: 255, g: 0, b: 0, a: 255 };
-        let blue = Rgba8 { r: 0, g: 0, b: 255, a: 255 };
+        let red = Rgba8 {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let blue = Rgba8 {
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 255,
+        };
         assert!(fb.write_if_closer(2, 2, 0.5, red));
         assert!(!fb.write_if_closer(2, 2, 0.9, blue), "depth=0.9 farther");
         assert_eq!(fb.sample(2, 2), red);
@@ -202,7 +212,12 @@ mod tests {
     #[test]
     fn clear_resets_color_and_depth() {
         let mut fb = Framebuffer::new(2, 2);
-        let c = Rgba8 { r: 10, g: 20, b: 30, a: 255 };
+        let c = Rgba8 {
+            r: 10,
+            g: 20,
+            b: 30,
+            a: 255,
+        };
         fb.clear(c, 1.0);
         for y in 0..2 {
             for x in 0..2 {

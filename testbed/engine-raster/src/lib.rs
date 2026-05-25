@@ -32,8 +32,6 @@ pub mod rasterize;
 pub mod sample;
 
 pub use framebuffer::{Framebuffer, Rgba8};
-pub use oracle::{compare_images, ImageComparison, OracleVerdict};
-pub use rasterize::{
-    clear, rasterize_triangle, Vertex, Viewport,
-};
-pub use sample::{golden_triangle_scene, GoldenScene};
+pub use oracle::{ImageComparison, OracleVerdict, compare_images};
+pub use rasterize::{Vertex, Viewport, clear, rasterize_triangle};
+pub use sample::{GoldenScene, golden_triangle_scene};

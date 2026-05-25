@@ -106,7 +106,12 @@ fn array_get_indexed_value() {
     let module = module_with(
         code,
         6,
-        vec![Const::Int(100), Const::Int(200), Const::Int(300), Const::Int(1)],
+        vec![
+            Const::Int(100),
+            Const::Int(200),
+            Const::Int(300),
+            Const::Int(1),
+        ],
     );
     assert_eq!(run_main(module), Value::Int(200));
 }
@@ -171,12 +176,26 @@ fn map_new_set_get_round_trip() {
     // r3 = MapGet r0 r1
     // return r3
     let code = vec![
-        Opcode::MapNew as u8, 0,
-        Opcode::ConstStr as u8, 1, 0x00, 0x00,
-        Opcode::ConstInt as u8, 2, 0x01, 0x00,
-        Opcode::MapSet as u8, 0, 1, 2,
-        Opcode::MapGet as u8, 3, 0, 1,
-        Opcode::ReturnVal as u8, 3,
+        Opcode::MapNew as u8,
+        0,
+        Opcode::ConstStr as u8,
+        1,
+        0x00,
+        0x00,
+        Opcode::ConstInt as u8,
+        2,
+        0x01,
+        0x00,
+        Opcode::MapSet as u8,
+        0,
+        1,
+        2,
+        Opcode::MapGet as u8,
+        3,
+        0,
+        1,
+        Opcode::ReturnVal as u8,
+        3,
     ];
     let module = module_with(
         code,
@@ -193,10 +212,18 @@ fn map_get_missing_key_returns_nil() {
     // r2 = MapGet r0 r1
     // return r2
     let code = vec![
-        Opcode::MapNew as u8, 0,
-        Opcode::ConstStr as u8, 1, 0x00, 0x00,
-        Opcode::MapGet as u8, 2, 0, 1,
-        Opcode::ReturnVal as u8, 2,
+        Opcode::MapNew as u8,
+        0,
+        Opcode::ConstStr as u8,
+        1,
+        0x00,
+        0x00,
+        Opcode::MapGet as u8,
+        2,
+        0,
+        1,
+        Opcode::ReturnVal as u8,
+        2,
     ];
     let module = module_with(code, 3, vec![Const::Str("missing".to_string())]);
     assert_eq!(run_main(module), Value::Nil);
@@ -210,17 +237,26 @@ fn struct_new_set_get_round_trip() {
     // r2 = StructGet r0 "x"
     // return r2
     let code = vec![
-        Opcode::StructNew as u8, 0,
-        Opcode::ConstInt as u8, 1, 0x01, 0x00,
-        Opcode::StructSet as u8, 0, 0x00, 0x00, 1,
-        Opcode::StructGet as u8, 2, 0, 0x00, 0x00,
-        Opcode::ReturnVal as u8, 2,
+        Opcode::StructNew as u8,
+        0,
+        Opcode::ConstInt as u8,
+        1,
+        0x01,
+        0x00,
+        Opcode::StructSet as u8,
+        0,
+        0x00,
+        0x00,
+        1,
+        Opcode::StructGet as u8,
+        2,
+        0,
+        0x00,
+        0x00,
+        Opcode::ReturnVal as u8,
+        2,
     ];
-    let module = module_with(
-        code,
-        3,
-        vec![Const::Str("x".to_string()), Const::Int(7)],
-    );
+    let module = module_with(code, 3, vec![Const::Str("x".to_string()), Const::Int(7)]);
     assert_eq!(run_main(module), Value::Int(7));
 }
 
@@ -230,9 +266,15 @@ fn struct_get_missing_field_returns_nil() {
     // r1 = StructGet r0 "x"
     // return r1
     let code = vec![
-        Opcode::StructNew as u8, 0,
-        Opcode::StructGet as u8, 1, 0, 0x00, 0x00,
-        Opcode::ReturnVal as u8, 1,
+        Opcode::StructNew as u8,
+        0,
+        Opcode::StructGet as u8,
+        1,
+        0,
+        0x00,
+        0x00,
+        Opcode::ReturnVal as u8,
+        1,
     ];
     let module = module_with(code, 2, vec![Const::Str("x".to_string())]);
     assert_eq!(run_main(module), Value::Nil);
@@ -287,7 +329,10 @@ fn closure_make_returns_handle() {
         function_index: vec![("main".to_string(), 0), ("target".to_string(), 1)],
     };
     let v = run_main(module);
-    assert!(matches!(v, Value::Closure(_)), "expected Closure, got {v:?}");
+    assert!(
+        matches!(v, Value::Closure(_)),
+        "expected Closure, got {v:?}"
+    );
 }
 
 #[test]
@@ -382,7 +427,10 @@ fn write_barrier_records_old_to_young_via_array_set() {
     // `fresh` was reachable from `arr_old` via the remembered set;
     // it survived one minor collection; age becomes 1; not promoted yet.
     assert!(remap2.is_empty());
-    assert!(heap.get(fresh).is_some(), "fresh survived via remembered set");
+    assert!(
+        heap.get(fresh).is_some(),
+        "fresh survived via remembered set"
+    );
 
     // Second survival promotes.
     let remap3 = heap.minor_collect(&[Value::Array(arr_old)]);

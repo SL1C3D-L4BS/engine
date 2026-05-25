@@ -7,7 +7,7 @@
 //! of `Pass` or `PassUnderThreshold` (with documented exception
 //! register entries for the latter).
 
-use engine_raster::{compare_images, golden_triangle_scene, OracleVerdict};
+use engine_raster::{OracleVerdict, compare_images, golden_triangle_scene};
 
 #[test]
 fn golden_scene_self_compares_bit_perfect() {
@@ -43,10 +43,8 @@ fn golden_scene_has_expected_pixel_coverage() {
 
 #[test]
 fn rendering_two_overlapping_triangles_obeys_depth() {
-    use engine_raster::{
-        rasterize_triangle, Framebuffer, Vertex, Viewport,
-    };
     use engine_raster::framebuffer::Rgba8;
+    use engine_raster::{Framebuffer, Vertex, Viewport, rasterize_triangle};
 
     let mut fb = Framebuffer::new(64, 64);
     fb.clear(Rgba8::default(), 1.0);

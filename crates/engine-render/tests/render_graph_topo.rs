@@ -9,9 +9,7 @@
 //! (ADR-033): the same graph topology + same registration order →
 //! byte-identical scheduling decision.
 
-use engine_render::render_graph::{
-    Pass, PassContext, RenderGraph, ResourceId, ResourceSet, Track,
-};
+use engine_render::render_graph::{Pass, PassContext, RenderGraph, ResourceId, ResourceSet, Track};
 
 /// A trivial pass that declares a fixed read/write resource set.
 struct P {

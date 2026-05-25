@@ -461,9 +461,8 @@ pub fn run(
                 let target_handle = value_gc_handle(&new_val);
                 match heap.get_mut(map) {
                     Some(crate::gc::Obj::Map(entries)) => {
-                        if let Some(slot) = entries
-                            .iter_mut()
-                            .find(|(k, _)| k.as_ref() == key.as_ref())
+                        if let Some(slot) =
+                            entries.iter_mut().find(|(k, _)| k.as_ref() == key.as_ref())
                         {
                             slot.1 = new_val;
                         } else {
@@ -535,9 +534,8 @@ pub fn run(
                 let target_handle = value_gc_handle(&new_val);
                 match heap.get_mut(strct) {
                     Some(crate::gc::Obj::Struct(fields)) => {
-                        if let Some(slot) = fields
-                            .iter_mut()
-                            .find(|(k, _)| k.as_ref() == name.as_ref())
+                        if let Some(slot) =
+                            fields.iter_mut().find(|(k, _)| k.as_ref() == name.as_ref())
                         {
                             slot.1 = new_val;
                         } else {
@@ -574,9 +572,7 @@ pub fn run(
                 let cls = match frame.reg(cls_reg) {
                     Value::Closure(h) => *h,
                     other => {
-                        return StopReason::Error(format!(
-                            "CallClosure on non-closure: {other:?}"
-                        ));
+                        return StopReason::Error(format!("CallClosure on non-closure: {other:?}"));
                     }
                 };
                 let mut args = Vec::with_capacity(n as usize);

@@ -17,7 +17,7 @@
 //! `compare_images` and routes the verdict + the exception register
 //! to a per-scene pass/fail decision.
 
-use crate::framebuffer::{srgb_byte_to_linear, Framebuffer};
+use crate::framebuffer::{Framebuffer, srgb_byte_to_linear};
 
 /// Summary of an image comparison.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +84,11 @@ pub fn compare_images(reference: &Framebuffer, candidate: &Framebuffer) -> Image
             violating += 1;
         }
     }
-    let mean = if total > 0 { sum_delta / total as f32 } else { 0.0 };
+    let mean = if total > 0 {
+        sum_delta / total as f32
+    } else {
+        0.0
+    };
     let frac_violating = (violating as f32) / (total.max(1) as f32);
     let verdict = if violating == 0 {
         OracleVerdict::Pass
@@ -123,7 +127,16 @@ mod tests {
         let mut fb2 = Framebuffer::new(10, 10);
         // One pixel: linear delta 1/255 → does not exceed the strict
         // threshold (we use strict >), so this should pass.
-        fb2.write(0, 0, Rgba8 { r: 1, g: 0, b: 0, a: 255 });
+        fb2.write(
+            0,
+            0,
+            Rgba8 {
+                r: 1,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        );
         let cmp = compare_images(&fb1, &fb2);
         // 1/255 ≈ 0.00392; threshold check is strict > 1/255, so this
         // is right at the boundary and passes.
@@ -137,7 +150,16 @@ mod tests {
         // Paint every pixel bright red.
         for y in 0..8 {
             for x in 0..8 {
-                fb2.write(x, y, Rgba8 { r: 255, g: 0, b: 0, a: 255 });
+                fb2.write(
+                    x,
+                    y,
+                    Rgba8 {
+                        r: 255,
+                        g: 0,
+                        b: 0,
+                        a: 255,
+                    },
+                );
             }
         }
         let cmp = compare_images(&fb1, &fb2);
@@ -153,7 +175,16 @@ mod tests {
         // the 1/255 ≈ 0.00392 threshold but well below 4/255 = 0.0157.
         // 50 / 10_000 = 0.5%, well under the 1% allowance.
         for i in 0..50 {
-            fb2.write(i as u32, 0, Rgba8 { r: 16, g: 0, b: 0, a: 255 });
+            fb2.write(
+                i as u32,
+                0,
+                Rgba8 {
+                    r: 16,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                },
+            );
         }
         let cmp = compare_images(&fb1, &fb2);
         assert_eq!(cmp.verdict, OracleVerdict::PassUnderThreshold);
@@ -169,7 +200,16 @@ mod tests {
         for i in 0..200 {
             let x = (i % 100) as u32;
             let y = (i / 100) as u32;
-            fb2.write(x, y, Rgba8 { r: 16, g: 0, b: 0, a: 255 });
+            fb2.write(
+                x,
+                y,
+                Rgba8 {
+                    r: 16,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                },
+            );
         }
         let cmp = compare_images(&fb1, &fb2);
         assert_eq!(cmp.verdict, OracleVerdict::Fail);

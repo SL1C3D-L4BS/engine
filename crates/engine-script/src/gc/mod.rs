@@ -344,9 +344,7 @@ impl Heap {
     /// Borrowed view of the set of currently-live handles. Used by
     /// `gc_oracle.rs` to assert reachable-set correctness.
     pub fn live_handles(&self) -> Vec<GcHandle> {
-        let mut out = Vec::with_capacity(
-            (self.nursery.live() + self.old_gen.live()) as usize,
-        );
+        let mut out = Vec::with_capacity((self.nursery.live() + self.old_gen.live()) as usize);
         for i in self.nursery.live_indices() {
             out.push(GcHandle::nursery(i));
         }
@@ -471,7 +469,10 @@ mod tests {
         let roots = vec![Value::Array(kept)];
 
         let remap1 = h.minor_collect(&roots);
-        assert!(remap1.is_empty(), "first survival ages but does not promote");
+        assert!(
+            remap1.is_empty(),
+            "first survival ages but does not promote"
+        );
         assert!(kept.is_young());
         assert!(h.get(kept).is_some());
 
@@ -511,7 +512,10 @@ mod tests {
         // mutation is wired). The remembered-set source is treated as
         // a root for scanning; since `fresh` isn't actually inside
         // parent's Obj::Array, it should be collected. Test that:
-        assert!(remap2.is_empty(), "fresh not actually inside parent; collected");
+        assert!(
+            remap2.is_empty(),
+            "fresh not actually inside parent; collected"
+        );
         assert!(h.get(fresh).is_none());
     }
 

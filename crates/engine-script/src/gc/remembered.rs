@@ -11,8 +11,8 @@
 //! cards dirty) is a single u8 read per minor collection — the
 //! literature's classic generational win.
 
-use crate::gc::old_gen::CARD_SIZE;
 use crate::gc::GcHandle;
+use crate::gc::old_gen::CARD_SIZE;
 
 /// Set of dirty cards plus a discrete list of cross-gen edges. The
 /// discrete list is consulted by minor collections to traverse old→young

@@ -17,7 +17,7 @@
 //! pipeline implementation in PR 2+; the rasterizer here is the
 //! oracle for what passes the GPU produces in the on-screen case.
 
-use crate::framebuffer::{linear_to_srgb_byte, Framebuffer, Rgba8};
+use crate::framebuffer::{Framebuffer, Rgba8, linear_to_srgb_byte};
 
 /// A vertex after the projection transform: clip-space x/y/z + w,
 /// plus a vertex colour the rasterizer interpolates.
@@ -42,7 +42,15 @@ pub struct Vertex {
 impl Vertex {
     /// Construct a vertex in clip space.
     pub fn new(x: f32, y: f32, z: f32, w: f32, r: f32, g: f32, b: f32) -> Self {
-        Self { x, y, z, w, r, g, b }
+        Self {
+            x,
+            y,
+            z,
+            w,
+            r,
+            g,
+            b,
+        }
     }
 }
 
@@ -163,23 +171,16 @@ pub fn rasterize_triangle(fb: &mut Framebuffer, vp: Viewport, tri: [Vertex; 3]) 
 
             // Perspective-correct depth + colour.
             let one_over_w = w0 * iw[0] + w1 * iw[1] + w2 * iw[2];
-            let z =
-                w0 * sz[0] * iw[0] + w1 * sz[1] * iw[1] + w2 * sz[2] * iw[2];
+            let z = w0 * sz[0] * iw[0] + w1 * sz[1] * iw[1] + w2 * sz[2] * iw[2];
             let z = z / one_over_w;
             if !(0.0..=1.0).contains(&z) {
                 continue;
             }
-            let r = (w0 * tri[0].r * iw[0]
-                + w1 * tri[1].r * iw[1]
-                + w2 * tri[2].r * iw[2])
+            let r = (w0 * tri[0].r * iw[0] + w1 * tri[1].r * iw[1] + w2 * tri[2].r * iw[2])
                 / one_over_w;
-            let g = (w0 * tri[0].g * iw[0]
-                + w1 * tri[1].g * iw[1]
-                + w2 * tri[2].g * iw[2])
+            let g = (w0 * tri[0].g * iw[0] + w1 * tri[1].g * iw[1] + w2 * tri[2].g * iw[2])
                 / one_over_w;
-            let b = (w0 * tri[0].b * iw[0]
-                + w1 * tri[1].b * iw[1]
-                + w2 * tri[2].b * iw[2])
+            let b = (w0 * tri[0].b * iw[0] + w1 * tri[1].b * iw[1] + w2 * tri[2].b * iw[2])
                 / one_over_w;
             let pixel = Rgba8 {
                 r: linear_to_srgb_byte(r),
@@ -252,7 +253,10 @@ mod tests {
         ];
         rasterize_triangle(&mut fb, vp, front);
         let b_pixel = fb.sample(8, 8);
-        assert!(b_pixel.b > 200, "front triangle should overwrite: {b_pixel:?}");
+        assert!(
+            b_pixel.b > 200,
+            "front triangle should overwrite: {b_pixel:?}"
+        );
     }
 
     #[test]

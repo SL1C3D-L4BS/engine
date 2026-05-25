@@ -12,7 +12,7 @@
 //! scene's reference.
 
 use crate::framebuffer::Framebuffer;
-use crate::rasterize::{clear, rasterize_triangle, Vertex, Viewport};
+use crate::rasterize::{Vertex, Viewport, clear, rasterize_triangle};
 
 /// A complete reference image + the resolution it was rendered at.
 #[derive(Clone, Debug)]
@@ -53,6 +53,9 @@ mod tests {
         let centre = scene.framebuffer.sample(64, 96);
         // Pixel near the bottom-centre of the triangle should have
         // a mix of red + green dominated, blue smaller.
-        assert!(centre.r > 50 || centre.g > 50, "centre is black: {centre:?}");
+        assert!(
+            centre.r > 50 || centre.g > 50,
+            "centre is black: {centre:?}"
+        );
     }
 }
