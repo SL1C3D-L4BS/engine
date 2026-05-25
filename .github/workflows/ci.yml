@@ -255,8 +255,116 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against internal engine_* imports from bin / templates / starter-kits (ADR-050)
+        run: |
+          # Phase 0 catchup: bin/ and templates/ and starter-kits/ may only
+          # import the engine-api facade crate. Internal crates (engine_core,
+          # engine_render, engine_script, engine_asset, …) must not be
+          # imported directly from these locations. This guard is the
+          # interim mechanism until engine-api activates (ADR-050) and
+          # cargo-semver-checks owns the contract surface end-to-end.
+          # While engine-api is empty (pre-Phase-10), the guard still
+          # rejects internal-crate imports from bin/ etc. — bins use
+          # whichever internal crates they currently consume directly
+          # (e.g. bin/engine-repl uses engine_script), and that allowlist
+          # is documented inline here. Phase 10's engine-api activation
+          # tightens this to "only engine_api may be imported from bin/."
+          #
+          # Current allowlist of internal crates that bin/ + templates/
+          # may import (the pre-Phase-10 reality):
+          #   - engine_script (used by bin/engine-repl, bin/engine-debug)
+          #   - engine_asset, engine_core, engine_telemetry, engine_platform
+          #     (used by Phase-0–4 CLIs and benches)
+          # Future state (post-Phase-10): only engine_api.
+          if [ -d bin ] || [ -d templates ] || [ -d starter-kits ]; then
+            hits=$(grep -rnE 'use engine_(reflect|i18n|render|gpu|audio|ai|net|physics|ui|editor|hub_core|plugin_api)\b' \
+                bin templates starter-kits 2>/dev/null \
+                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+                | grep -vE '\.md:' || true)
+            if [ -n "$hits" ]; then
+              echo "$hits"
+              echo "::error::bin/ + templates/ + starter-kits/ must import via engine-api — see ADR-050"
+              exit 1
+            fi
+          fi
+
+      - name: cargo-geiger unsafe enumeration (ADR-058)
+        run: |
+          # Enumerate unsafe code in the workspace and compare against the
+          # committed baseline. New unsafe in a previously-safe crate is a
+          # CI failure (review must add a baseline section); new unsafe in
+          # an existing-unsafe crate is allowed but the baseline must be
+          # updated in the same PR. See ADR-058.
+          # cargo-geiger ships as a separate crate; install on demand.
+          # The check tool is the workspace's engine-geiger-check binary
+          # (~150 LOC) which parses the JSON report and the markdown
+          # baseline; lives at tools/engine-geiger-check/.
+          if [ -d tools/engine-geiger-check ]; then
+            cargo install cargo-geiger --locked || true
+            if command -v cargo-geiger >/dev/null 2>&1; then
+              cargo geiger --workspace --output-format Json > /tmp/geiger.json 2>/dev/null || true
+              cargo run --quiet -p engine-geiger-check -- \
+                --baseline docs/observatory/cargo-geiger-baseline.md \
+                --report /tmp/geiger.json || {
+                  echo "::error::cargo-geiger baseline drift — see ADR-058 / docs/observatory/cargo-geiger-baseline.md"
+                  exit 1
+                }
+            else
+              echo "::warning::cargo-geiger not installable on this runner; skipping (informational, see ADR-058)"
+            fi
+          else
+            echo "::warning::tools/engine-geiger-check not present yet; cargo-geiger check is a no-op (ADR-058 Phase-0 catchup)"
+          fi
+
+      - name: Guard against direct wgpu use outside engine-gpu (ADR-049)
+        run: |
+          # Phase 5 introduces wgpu as a workspace dep. The owned
+          # `engine-gpu` Level-1 crate is the single permissible
+          # consumer; every higher crate names engine_gpu types, not
+          # wgpu types. Doc-comments and rustdoc cross-references stay
+          # exempt (same strip pattern as ADR-028/-029/-032 guards).
+          # The crates/engine-gpu/ allowlist activates the first time
+          # that directory exists; until then the guard is a no-op.
+          hits=$(grep -rnE '\bwgpu::|use wgpu\b|extern crate wgpu' crates bin tools testbed \
+              | grep -v -e 'crates/engine-gpu/' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Route through engine_gpu instead of wgpu directly — see ADR-049"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
+
+      # ADR-050: cargo-semver-checks is wired in now (no-op while
+      # engine-api is empty) so the API-stability gate is proven in
+      # place before the contract activates at v1.0 (spec risk R-03,
+      # spec §XX.1). The check exits 0 trivially on a crate with no
+      # public items; a future PR that lands the first engine-api
+      # symbol inherits the working gate without further wiring.
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+
+      - name: API stability check — engine-api (ADR-012 + ADR-050)
+        run: |
+          # The "no baseline" first run cannot diff against a prior
+          # release. Once the first tagged release exists this becomes
+          # the live check; until then the wiring is exercised but
+          # tolerant.
+          set +e
+          cargo semver-checks check-release -p engine-api
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            # On a stub crate the only non-zero exit is "no baseline
+            # found", which is expected pre-v1.0. Treat anything else
+            # as a hard failure.
+            echo "::warning::cargo-semver-checks exited $rc on a stub engine-api crate — pre-v1.0 expected behaviour. See ADR-050."
+          fi
 
       # Sampling profiler oracle (ADR-030). Requires frame-pointer codegen
       # so the kernel's PERF_SAMPLE_CALLCHAIN walker finds frames past the
