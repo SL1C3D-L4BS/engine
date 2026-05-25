@@ -60,7 +60,7 @@ impl OldGen {
 
     /// Number of cards covering the current capacity.
     pub fn card_count(&self) -> u32 {
-        (self.capacity() + CARD_SIZE - 1) / CARD_SIZE
+        self.capacity().div_ceil(CARD_SIZE)
     }
 
     /// Card index that covers `slot_idx`.

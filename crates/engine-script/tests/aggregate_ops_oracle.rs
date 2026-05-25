@@ -170,25 +170,14 @@ fn map_new_set_get_round_trip() {
     // MapSet r0 r1 r2
     // r3 = MapGet r0 r1
     // return r3
-    let mut code = Vec::new();
-    code.push(Opcode::MapNew as u8);
-    code.push(0);
-    code.push(Opcode::ConstStr as u8);
-    code.push(1);
-    code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(Opcode::ConstInt as u8);
-    code.push(2);
-    code.extend_from_slice(&1u16.to_le_bytes());
-    code.push(Opcode::MapSet as u8);
-    code.push(0);
-    code.push(1);
-    code.push(2);
-    code.push(Opcode::MapGet as u8);
-    code.push(3);
-    code.push(0);
-    code.push(1);
-    code.push(Opcode::ReturnVal as u8);
-    code.push(3);
+    let code = vec![
+        Opcode::MapNew as u8, 0,
+        Opcode::ConstStr as u8, 1, 0x00, 0x00,
+        Opcode::ConstInt as u8, 2, 0x01, 0x00,
+        Opcode::MapSet as u8, 0, 1, 2,
+        Opcode::MapGet as u8, 3, 0, 1,
+        Opcode::ReturnVal as u8, 3,
+    ];
     let module = module_with(
         code,
         4,
@@ -203,18 +192,12 @@ fn map_get_missing_key_returns_nil() {
     // r1 = const_str "missing"
     // r2 = MapGet r0 r1
     // return r2
-    let mut code = Vec::new();
-    code.push(Opcode::MapNew as u8);
-    code.push(0);
-    code.push(Opcode::ConstStr as u8);
-    code.push(1);
-    code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(Opcode::MapGet as u8);
-    code.push(2);
-    code.push(0);
-    code.push(1);
-    code.push(Opcode::ReturnVal as u8);
-    code.push(2);
+    let code = vec![
+        Opcode::MapNew as u8, 0,
+        Opcode::ConstStr as u8, 1, 0x00, 0x00,
+        Opcode::MapGet as u8, 2, 0, 1,
+        Opcode::ReturnVal as u8, 2,
+    ];
     let module = module_with(code, 3, vec![Const::Str("missing".to_string())]);
     assert_eq!(run_main(module), Value::Nil);
 }
@@ -226,22 +209,13 @@ fn struct_new_set_get_round_trip() {
     // StructSet r0 "x"(const 0) r1
     // r2 = StructGet r0 "x"
     // return r2
-    let mut code = Vec::new();
-    code.push(Opcode::StructNew as u8);
-    code.push(0);
-    code.push(Opcode::ConstInt as u8);
-    code.push(1);
-    code.extend_from_slice(&1u16.to_le_bytes());
-    code.push(Opcode::StructSet as u8);
-    code.push(0);
-    code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(1);
-    code.push(Opcode::StructGet as u8);
-    code.push(2);
-    code.push(0);
-    code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(Opcode::ReturnVal as u8);
-    code.push(2);
+    let code = vec![
+        Opcode::StructNew as u8, 0,
+        Opcode::ConstInt as u8, 1, 0x01, 0x00,
+        Opcode::StructSet as u8, 0, 0x00, 0x00, 1,
+        Opcode::StructGet as u8, 2, 0, 0x00, 0x00,
+        Opcode::ReturnVal as u8, 2,
+    ];
     let module = module_with(
         code,
         3,
@@ -255,15 +229,11 @@ fn struct_get_missing_field_returns_nil() {
     // r0 = StructNew
     // r1 = StructGet r0 "x"
     // return r1
-    let mut code = Vec::new();
-    code.push(Opcode::StructNew as u8);
-    code.push(0);
-    code.push(Opcode::StructGet as u8);
-    code.push(1);
-    code.push(0);
-    code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(Opcode::ReturnVal as u8);
-    code.push(1);
+    let code = vec![
+        Opcode::StructNew as u8, 0,
+        Opcode::StructGet as u8, 1, 0, 0x00, 0x00,
+        Opcode::ReturnVal as u8, 1,
+    ];
     let module = module_with(code, 2, vec![Const::Str("x".to_string())]);
     assert_eq!(run_main(module), Value::Nil);
 }

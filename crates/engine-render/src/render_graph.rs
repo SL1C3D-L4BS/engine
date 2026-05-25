@@ -109,16 +109,13 @@ impl<T: ResourceType> Resource<T> {
     }
 }
 
+impl<T: ResourceType> Copy for Resource<T> {}
+
 impl<T: ResourceType> Clone for Resource<T> {
     fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            _phantom: PhantomData,
-        }
+        *self
     }
 }
-
-impl<T: ResourceType> Copy for Resource<T> {}
 
 impl<T: ResourceType> PartialEq for Resource<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -404,11 +401,15 @@ pub enum ExecuteError {
 mod tests {
     use super::*;
 
+    // Phantom-marker types used only as `Resource<T>` type parameters; the
+    // associated `KIND` / `NAME` constants are what gets exercised.
+    #[allow(dead_code)]
     struct DummyAlbedo;
     impl ResourceType for DummyAlbedo {
         const KIND: ResourceKind = ResourceKind::Texture;
         const NAME: &'static str = "GBufferAlbedo";
     }
+    #[allow(dead_code)]
     struct DummyDepth;
     impl ResourceType for DummyDepth {
         const KIND: ResourceKind = ResourceKind::Texture;

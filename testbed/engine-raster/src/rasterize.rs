@@ -166,7 +166,7 @@ pub fn rasterize_triangle(fb: &mut Framebuffer, vp: Viewport, tri: [Vertex; 3]) 
             let z =
                 w0 * sz[0] * iw[0] + w1 * sz[1] * iw[1] + w2 * sz[2] * iw[2];
             let z = z / one_over_w;
-            if z < 0.0 || z > 1.0 {
+            if !(0.0..=1.0).contains(&z) {
                 continue;
             }
             let r = (w0 * tri[0].r * iw[0]

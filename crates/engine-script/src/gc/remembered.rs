@@ -38,7 +38,7 @@ impl RememberedSet {
 
     /// Resize the card bitmap to cover at least `slots` worth of old gen.
     pub fn resize_for(&mut self, slot_count: u32) {
-        let needed = (slot_count + CARD_SIZE - 1) / CARD_SIZE;
+        let needed = slot_count.div_ceil(CARD_SIZE);
         if needed > self.cards.len() as u32 {
             self.cards.resize(needed as usize, 0);
         }
