@@ -2,8 +2,9 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 3** (ENGINE CORE). The crate
-tree, levels, and architecture follow the authoritative specification:
+This repository is the monorepo through **Phase 4** (SCRIPTING), audited
+and gated for Phase 5 (RENDERING FOUNDATION). The crate tree, levels,
+and architecture follow the authoritative specification:
 
 > `~/Resources/documentation/ENGINE_SPECIFICATION_v2.0.md`
 
@@ -15,6 +16,17 @@ tree, levels, and architecture follow the authoritative specification:
 - `tests/{integration,rendering,semver,bench,determinism}/` — test surfaces
 - `docs/adr/` — Architecture Decision Records (Part XXII)
 - `docs/architecture/` — subsystem architecture docs
+- `docs/audit/` — enterprise-grade audits (see [Audits](#audits))
+- `docs/observatory/` — performance baselines per shipped subsystem
+- `docs/runbooks/` — operational runbooks for CI / infra
+
+## Audits
+
+- [Phases 0–4 enterprise audit (2026-05-24)](docs/audit/phases-0-4-enterprise-audit.md)
+  — full audit against the spec, all 38 prior ADRs, the actual code,
+  and the book library. Surfaces 14 remediation ADRs (ADR-039 through
+  ADR-053) and three doc-staleness fixes that close before Phase 5
+  implementation begins.
 
 ## Build
 
@@ -128,5 +140,57 @@ deterministic parallel scheduler:
 
 **Engine Core v0.1** is tagged at the close of Phase 3.
 
-The upper layers (render, physics, audio, net, script, ai, editor, …)
-remain stubs and are built across the later phases — see spec Part XXI.
+Phase 4 (SCRIPTING, spec Part XXI) closed on 2026-05-20 across four PRs,
+each gated by the cross-arch determinism oracles and the existing CI
+guards:
+
+- **sli compiler front-end.** `crates/engine-script/` ships the hand-
+  written lexer + Pratt parser + bottom-up type checker + SSA IR with
+  const-fold / CSE / DCE optimisation passes and a deterministic IR
+  text serialiser. Oracle: `tests/compile_parity.rs` (BLAKE3 digest
+  over the optimised-IR serialisation of a curated corpus, committed
+  golden at `tests/goldens/sli-compile.golden`). CI grep guard rejects
+  every vendored interpreter / parser-generator family
+  (rlua/mlua/wasmtime/wasmer/cranelift/inkwell/lalrpop/pest/nom/
+  combine/chumsky) under `crates/engine-script/`. ADR-034.
+- **Register VM + tri-color GC + bytecode verifier.** Owned register-
+  based dispatch with the TRAP opcode (0xFF) reserved for breakpoints
+  defended by a four-layer impossibility argument (type system + grep
+  guard + 500-program fuzz oracle + verifier). Single-generation GC
+  ships in PR 2; the nursery / old-gen / remembered-set / write-
+  barrier modules are typed stubs for the generational follow-up.
+  Oracles: `tests/vm_oracle.rs`, `tests/verifier.rs`, `tests/gc_oracle.rs`,
+  `tests/codegen_no_trap.rs`. ADR-035.
+- **Hot-reload + debugger protocol + REPL.** Owned binary wire
+  protocol (no Microsoft DAP, no serde) in `debug_proto.rs` with
+  every request/response/event variant locked by a round-trip
+  oracle. `bin/engine-debug/` is the debugger server; `bin/engine-repl/`
+  is the cooked-mode REPL. Hot-reload uses a deterministic polling
+  watcher; breakpoint persistence uses an owned TOML writer/reader
+  (acknowledged deviation from spec, see ADR-051). ADR-036.
+- **Slang shader toolchain.** `tools/engine-shader/` wraps the
+  official `slangc` binary as a sandboxed subprocess per ADR-019,
+  pinned at `SLANGC_PIN = "v2026.9"`. Owned artefact bundle format,
+  content-addressed via the asset pipeline (ADR-008). The per-target
+  reproducibility golden (`triangle-reproducibility.golden`) runs
+  cross-arch in CI with graceful skips for unavailable backends.
+  ADR-037 + ADR-038.
+
+**Phases 0–4 enterprise audit** closed 2026-05-24
+([report](docs/audit/phases-0-4-enterprise-audit.md)). The audit
+landed 14 remediation ADRs (ADR-039 through ADR-053) covering the
+Phase 5 design contracts (render graph, CSM, IBL, TAA, cluster
+lights, bindless heap, texture-compression fallback, rasterizer
+oracle regression criteria, frame-pacing CI gate, pak overlay
+composition), the owned wgpu wrapper (`engine-gpu`), the Phase 5
+PR slicing plan (6 PRs), the cargo-semver-checks adoption, the
+acknowledged-deviations register, and the weekly reproducible-
+build verification. CI gains a `wgpu::` grep guard, a
+`cargo-semver-checks` step, and a scheduled reproducible-build
+workflow as part of the audit's remediation.
+
+The upper layers (render, physics, audio, net, ai, editor, hub, ui,
+api, plugin-api) remain stubs and are built across the later phases.
+Phase 5 (RENDERING FOUNDATION, Track A — deferred PBR, software
+rasterizer oracle, RX 580 @ 60 FPS @ 1440p milestone) is next on
+deck — see spec Part XXI and ADR-053.

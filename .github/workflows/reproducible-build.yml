@@ -1,0 +1,100 @@
+# [ENGINE] platform — reproducible-build verification (ADR-052).
+#
+# Spec §XX.8 demands bit-identical artifacts verified weekly via the
+# SHA-256 same-commit-twice-cold-cache comparison method. Schedule:
+# Sundays 02:00 UTC. Manual dispatch is available for ad-hoc
+# verification.
+
+name: reproducible-build
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reproducible_build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      # Build 1 — cold cache, default release profile.
+      - name: Build 1 (cold)
+        env:
+          CARGO_TARGET_DIR: /tmp/build1
+        run: cargo build --release --workspace --locked
+
+      - name: Hash artefacts (build 1)
+        run: |
+          find /tmp/build1/release -maxdepth 1 -type f \
+              \( -name 'engine-*' -o -name 'libengine_*' \) \
+              -exec sha256sum {} \; | sort > /tmp/sha-build1.txt
+          # Strip the absolute path so the diff is over names+hashes only.
+          sed -i 's|/tmp/build1/release/||' /tmp/sha-build1.txt
+          cat /tmp/sha-build1.txt
+
+      # Build 2 — separate target dir for a true cold cache.
+      - name: Build 2 (cold)
+        env:
+          CARGO_TARGET_DIR: /tmp/build2
+        run: cargo build --release --workspace --locked
+
+      - name: Hash artefacts (build 2)
+        run: |
+          find /tmp/build2/release -maxdepth 1 -type f \
+              \( -name 'engine-*' -o -name 'libengine_*' \) \
+              -exec sha256sum {} \; | sort > /tmp/sha-build2.txt
+          sed -i 's|/tmp/build2/release/||' /tmp/sha-build2.txt
+          cat /tmp/sha-build2.txt
+
+      - name: Compare
+        id: compare
+        run: |
+          if diff -q /tmp/sha-build1.txt /tmp/sha-build2.txt > /dev/null; then
+            echo "result=reproducible" >> "$GITHUB_OUTPUT"
+            echo "All hashes match — reproducible build confirmed."
+          else
+            echo "result=divergent" >> "$GITHUB_OUTPUT"
+            echo "::error::Reproducible-build property violated — see ADR-052 and docs/runbooks/reproducible-build-divergence.md"
+            diff /tmp/sha-build1.txt /tmp/sha-build2.txt || true
+            exit 1
+          fi
+
+      - name: Build observatory log fragment
+        if: always()
+        run: |
+          mkdir -p /tmp/log
+          {
+            echo "## $(date -u +%Y-%m-%d) — commit ${GITHUB_SHA:0:12}"
+            echo
+            echo '### Hashes (build 1)'
+            echo '```'
+            cat /tmp/sha-build1.txt
+            echo '```'
+            echo
+            if [ "${{ steps.compare.outputs.result }}" = "reproducible" ]; then
+              echo "**Result:** REPRODUCIBLE"
+            else
+              echo "**Result:** DIVERGENT"
+              echo
+              echo '```diff'
+              diff /tmp/sha-build1.txt /tmp/sha-build2.txt || true
+              echo '```'
+            fi
+          } > /tmp/log/run.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reproducible-build-${{ github.run_id }}
+          path: /tmp/log/run.md

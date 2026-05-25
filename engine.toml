@@ -3,13 +3,29 @@
 
 [platform]
 spec_version = "2.0"
-# Phase 3 (ENGINE CORE, spec Part XXI) closed: archetype-SoA storage with
+# Phase 3 (ENGINE CORE) closed 2026-05-20: archetype-SoA storage with
 # cross-arch `TypeStableId` (ADR-031), owned fiber job system + work-stealing
 # thread pool (ADR-032), and the deterministic parallel scheduler with the
-# replay-parity oracle and 1 M-entity bench (ADR-033). Engine Core v0.1 is
-# tagged. Upper layers (render, physics, audio, net, script, ai, editor, …)
-# remain stubs for Phase 4+.
-phase = "3"
+# replay-parity oracle and 1 M-entity bench (ADR-033). Engine Core v0.1
+# tagged.
+#
+# Phase 4 (SCRIPTING) closed 2026-05-20: sli compiler front-end (ADR-034),
+# register VM + tri-color GC + bytecode verifier (ADR-035), hot-reload +
+# debugger protocol + REPL (ADR-036), Slang shader toolchain via sandboxed
+# slangc subprocess (ADR-037), Slang reproducibility golden (ADR-038). Four
+# PRs, all gated by cross-arch determinism oracles and the existing CI
+# guards. `engine-script` + `tools/engine-shader` + `bin/engine-{repl,debug}`
+# are production-ready.
+#
+# Phase 5 audit closed 2026-05-24: see
+# `docs/audit/phases-0-4-enterprise-audit.md`. The audit's 14 remediation
+# ADRs (ADR-039 through ADR-053) landed before Phase 5 implementation
+# begins; the imminent renderer crate (`engine-render`), the testbed
+# (`testbed/engine-raster`), and the new `engine-gpu` Level-1 wgpu
+# wrapper (ADR-049) are scoped per ADR-053's 6-PR slicing plan. Upper
+# layers (physics, audio, net, ai, editor, hub, ui, api, plugin-api)
+# remain stubs for their respective phases.
+phase = "4-audited"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.
