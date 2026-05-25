@@ -91,6 +91,45 @@ pub enum Opcode {
     /// `return src` — `src:u8`.
     ReturnVal = 0x61,
 
+    /// Allocate a new array from `n` register values. The runtime
+    /// resolves each register, packs the values into an `Obj::Array`,
+    /// and stores the resulting handle in `dst`. Layout:
+    /// `dst:u8 n:u8 arg0:u8 .. argN-1:u8` (ADR-060).
+    ArrayNew = 0x70,
+    /// `dst = arr[idx]` — `dst:u8 arr:u8 idx:u8`. `idx` is the
+    /// integer register; runtime traps on negative or out-of-bounds.
+    ArrayGet = 0x71,
+    /// `arr[idx] = src` — `arr:u8 idx:u8 src:u8`. Fires the write
+    /// barrier when `arr` is old-gen and `src` is a nursery handle.
+    ArraySet = 0x72,
+    /// `dst = arr.len()` — `dst:u8 arr:u8`. Result is an `Int`.
+    ArrayLen = 0x73,
+    /// Allocate an empty map — `dst:u8`. Populated by subsequent
+    /// `MapSet` opcodes.
+    MapNew = 0x74,
+    /// `dst = map[key]` — `dst:u8 map:u8 key:u8`. `key` register must
+    /// hold a `Str`; runtime trap otherwise. Missing key yields `Nil`.
+    MapGet = 0x75,
+    /// `map[key] = src` — `map:u8 key:u8 src:u8`. Fires the write
+    /// barrier.
+    MapSet = 0x76,
+    /// Allocate an empty struct — `dst:u8`. Populated by `StructSet`.
+    StructNew = 0x77,
+    /// `dst = strct.<name>` — `dst:u8 strct:u8 name_ki:u16le`.
+    /// `name_ki` indexes the const pool's `Str` entry holding the
+    /// field name.
+    StructGet = 0x78,
+    /// `strct.<name> = src` — `strct:u8 name_ki:u16le src:u8`. Fires
+    /// the write barrier.
+    StructSet = 0x79,
+    /// Build a closure object — `dst:u8 fn_idx:u16le n:u8 up0:u8 ..
+    /// upN-1:u8`. The `n` upvalues are captured by value.
+    ClosureMake = 0x7A,
+    /// Call a closure — `dst:u8 cls:u8 n:u8 arg0:u8 .. argN-1:u8`.
+    /// The closure's captured upvalues are passed as registers 0..k
+    /// of the callee frame; user args occupy `k..k+n`.
+    CallClosure = 0x7B,
+
     /// Debugger breakpoint marker. Never emitted by codegen.
     Trap = 0xFF,
 }
@@ -137,6 +176,18 @@ impl Opcode {
             0x51 => Self::FfiCall,
             0x60 => Self::ReturnNil,
             0x61 => Self::ReturnVal,
+            0x70 => Self::ArrayNew,
+            0x71 => Self::ArrayGet,
+            0x72 => Self::ArraySet,
+            0x73 => Self::ArrayLen,
+            0x74 => Self::MapNew,
+            0x75 => Self::MapGet,
+            0x76 => Self::MapSet,
+            0x77 => Self::StructNew,
+            0x78 => Self::StructGet,
+            0x79 => Self::StructSet,
+            0x7A => Self::ClosureMake,
+            0x7B => Self::CallClosure,
             0xFF => Self::Trap,
             _ => return None,
         })
@@ -171,6 +222,27 @@ impl Opcode {
                 // `dst:u8 fn_idx:u16 n:u8 args:[u8; n]`
                 let n = code.get(pc + 4).copied().unwrap_or(0) as usize;
                 1 + 1 + 2 + 1 + n
+            }
+            // Aggregate opcodes (ADR-060).
+            Self::ArrayNew => {
+                // `dst:u8 n:u8 args:[u8; n]`
+                let n = code.get(pc + 2).copied().unwrap_or(0) as usize;
+                1 + 1 + 1 + n
+            }
+            Self::ArrayGet | Self::ArraySet => 1 + 3,
+            Self::ArrayLen => 1 + 2,
+            Self::MapNew | Self::StructNew => 1 + 1,
+            Self::MapGet | Self::MapSet => 1 + 3,
+            Self::StructGet | Self::StructSet => 1 + 1 + 2 + 1,
+            Self::ClosureMake => {
+                // `dst:u8 fn_idx:u16 n:u8 ups:[u8; n]`
+                let n = code.get(pc + 4).copied().unwrap_or(0) as usize;
+                1 + 1 + 2 + 1 + n
+            }
+            Self::CallClosure => {
+                // `dst:u8 cls:u8 n:u8 args:[u8; n]`
+                let n = code.get(pc + 3).copied().unwrap_or(0) as usize;
+                1 + 1 + 1 + 1 + n
             }
         }
     }

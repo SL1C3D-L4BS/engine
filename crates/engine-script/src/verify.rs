@@ -283,6 +283,64 @@ fn verify_function(
                     check_reg(&f.name, pc, code[pc + 5 + i as usize], max_reg)?;
                 }
             }
+            // Aggregate opcodes (ADR-060). Register-only checks; type
+            // and key checks are deferred to runtime (the verifier
+            // does not carry a type lattice for aggregates today).
+            Opcode::ArrayNew => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                let n = code[pc + 2];
+                for i in 0..n {
+                    check_reg(&f.name, pc, code[pc + 3 + i as usize], max_reg)?;
+                }
+            }
+            Opcode::ArrayGet | Opcode::ArraySet | Opcode::MapGet | Opcode::MapSet => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                check_reg(&f.name, pc, code[pc + 2], max_reg)?;
+                check_reg(&f.name, pc, code[pc + 3], max_reg)?;
+            }
+            Opcode::ArrayLen | Opcode::MapNew | Opcode::StructNew => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                if op == Opcode::ArrayLen {
+                    check_reg(&f.name, pc, code[pc + 2], max_reg)?;
+                }
+            }
+            Opcode::StructGet | Opcode::StructSet => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                let name_ki = u16::from_le_bytes([code[pc + 2], code[pc + 3]]);
+                if name_ki >= const_max {
+                    return Err(VerifyError::OutOfBoundsConst {
+                        function: f.name.clone(),
+                        pc,
+                        idx: name_ki,
+                        max: const_max,
+                    });
+                }
+                check_reg(&f.name, pc, code[pc + 4], max_reg)?;
+            }
+            Opcode::ClosureMake => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                let id = u16::from_le_bytes([code[pc + 2], code[pc + 3]]);
+                if id >= fn_max {
+                    return Err(VerifyError::OutOfBoundsFunction {
+                        function: f.name.clone(),
+                        pc,
+                        id,
+                        max: fn_max,
+                    });
+                }
+                let n = code[pc + 4];
+                for i in 0..n {
+                    check_reg(&f.name, pc, code[pc + 5 + i as usize], max_reg)?;
+                }
+            }
+            Opcode::CallClosure => {
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                check_reg(&f.name, pc, code[pc + 2], max_reg)?;
+                let n = code[pc + 3];
+                for i in 0..n {
+                    check_reg(&f.name, pc, code[pc + 4 + i as usize], max_reg)?;
+                }
+            }
         }
         pc += len;
         if pc <= code.len() {
