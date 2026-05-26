@@ -479,6 +479,9 @@ version = "0.0.0"
 [[package]]
 name = "engine-raster"
 version = "0.0.0"
+dependencies = [
+ "engine-math",
+]
 
 [[package]]
 name = "engine-reflect"

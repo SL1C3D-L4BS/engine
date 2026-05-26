@@ -26,12 +26,33 @@
 //! image-diff oracle (ADR-046) ships alongside in
 //! `tests/raster_oracle.rs`.
 
+pub mod cluster;
 pub mod framebuffer;
 pub mod oracle;
 pub mod rasterize;
 pub mod sample;
+pub mod scene;
+pub mod shading;
+pub mod shadow;
 
+pub use cluster::{
+    CLUSTER_CELL_COUNT, CLUSTER_SLICES, CLUSTER_TILES_X, CLUSTER_TILES_Y, ClusterCell, ClusterGrid,
+    MAX_LIGHTS_PER_CLUSTER, assign_lights, cell_index, cell_world_corners, cell_world_sphere,
+    slice_of_view_z, slice_z,
+};
 pub use framebuffer::{Framebuffer, Rgba8};
 pub use oracle::{ImageComparison, OracleVerdict, compare_images};
 pub use rasterize::{Vertex, Viewport, clear, rasterize_triangle};
-pub use sample::{GoldenScene, golden_triangle_scene};
+pub use sample::{
+    GoldenScene, cluster_lights_scene, combined_deferred_scene, golden_triangle_scene,
+    shadow_heavy_scene,
+};
+pub use scene::{Aabb, Camera, Frustum, Light, LightType, Material, MeshInstance, Plane};
+pub use shading::{
+    SurfaceFragment, accumulate_lighting, cook_torrance, screen_tile, view_space_depth,
+};
+pub use shadow::{
+    ATLAS_DIM, CASCADE_DIM, CSM_CASCADES, Cascade, Cascades, PRACTICAL_SPLIT_LAMBDA, ShadowAtlas,
+    atlas_origin, build_cascades, cascade_splits, cascade_view_projection, render_cascades,
+    sample_shadow_pcf, select_cascade,
+};

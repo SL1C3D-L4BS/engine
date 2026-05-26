@@ -35,9 +35,18 @@
 //! No concrete pass is registered yet; PR 3 lands the first one
 //! (deferred G-buffer + cluster lights + CSM).
 
+pub mod passes;
 pub mod render_graph;
+pub mod resources;
 
 pub use engine_gpu as gpu;
+pub use passes::{
+    ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, LightingAccumulationPass,
+};
 pub use render_graph::{
     Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind, ResourceSet, Track,
+};
+pub use resources::{
+    ClusterCells, DepthBuffer, GBufferAlbedoRoughness, GBufferMotionDepth, GBufferNormalMetallic,
+    IndirectDrawBuffer, LightSsbo, LitColor, RenderQueue, ShadowAtlas, ShadowCasters,
 };
