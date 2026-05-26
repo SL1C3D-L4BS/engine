@@ -3,3 +3,4 @@
 *.pdb
 .sccache/
 /docs/architecture/_build/
+/.claude/
