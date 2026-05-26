@@ -106,3 +106,64 @@ impl ResourceType for LitColor {
     const KIND: ResourceKind = ResourceKind::Texture;
     const NAME: &'static str = "lit_color";
 }
+
+/// IBL probe set buffer (L2 SH coefficients, ADR-041 §5). Produced by
+/// the offline bake tool (`engine-ibl-bake`, deferred to Phase 5 follow-
+/// up) and uploaded once per scene; consumed by [`IblPass`].
+pub struct IblProbeSet;
+impl ResourceType for IblProbeSet {
+    const KIND: ResourceKind = ResourceKind::Buffer;
+    const NAME: &'static str = "ibl_probes";
+}
+
+/// 2D BRDF lookup texture for the Karis split-sum specular term
+/// (ADR-041 §4). 512×512 RG16F, ships in the pak as a single asset.
+pub struct BrdfLut;
+impl ResourceType for BrdfLut {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "brdf_lut";
+}
+
+/// Screen-space ambient-occlusion attachment (R8). Produced by
+/// [`SsaoPass`]; consumed by the [`crate::LightingAccumulationPass`] and
+/// the bloom/tonemap chain.
+pub struct SsaoTexture;
+impl ResourceType for SsaoTexture {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "ssao";
+}
+
+/// Previous-frame TAA history (RGBA16F at native render resolution).
+/// Double-buffered by the resource pool (ADR-042 §6); the pass reads
+/// the previous slot and writes the current slot.
+pub struct TaaHistory;
+impl ResourceType for TaaHistory {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "taa_history";
+}
+
+/// TAA-resolved HDR target. Canonical input to the
+/// [`UpscalerProvider`](crate) trait (ADR-005) and to the bloom +
+/// tonemap stages.
+pub struct TaaResolvedColor;
+impl ResourceType for TaaResolvedColor {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "taa_resolved";
+}
+
+/// Bloom layer — low-frequency bright-pass blur (ADR-042 §spec post
+/// chain). Produced by [`BloomPass`]; composited by [`TonemapPass`].
+pub struct BloomTexture;
+impl ResourceType for BloomTexture {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "bloom";
+}
+
+/// Final LDR tonemapped output. The compositor / swapchain consumer
+/// reads this; under Track A it is also the upscaler input when
+/// rendering below native resolution.
+pub struct TonemappedColor;
+impl ResourceType for TonemappedColor {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "tonemapped";
+}

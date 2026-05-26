@@ -25,10 +25,25 @@
 //! rasterizer is single-threaded and uses scalar arithmetic). The
 //! image-diff oracle (ADR-046) ships alongside in
 //! `tests/raster_oracle.rs`.
+//!
+//! ## Phase 5 PR 4 status
+//!
+//! The CPU oracle gains IBL (ADR-041) and the post-FX chain (ADR-042):
+//!
+//! - [`ibl`] — L2 SH probe storage + 8-neighbour trilinear sampling +
+//!   Ramamoorthi-Hanrahan closed-form verification. Probes obey the
+//!   `MAX_PROBES = 128` cap and `PROBE_CELL_SIZE = 4 m` default.
+//! - [`post_fx`] — Halton (2, 3) period-8 jitter, YCgCo neighbourhood-
+//!   clip TAA with motion-vector reprojection + disocclusion mask,
+//!   8-tap SSAO, soft-knee bloom extract + composite, ACES filmic
+//!   tonemap. Spec post-chain order:
+//!   `SSAO → TAA → Bloom → Tonemap → (grade) → Upscale`.
 
 pub mod cluster;
 pub mod framebuffer;
+pub mod ibl;
 pub mod oracle;
+pub mod post_fx;
 pub mod rasterize;
 pub mod sample;
 pub mod scene;
@@ -41,7 +56,17 @@ pub use cluster::{
     slice_of_view_z, slice_z,
 };
 pub use framebuffer::{Framebuffer, Rgba8};
+pub use ibl::{
+    CellKey, IblProbeSet, MAX_PROBES, PROBE_CELL_SIZE, Probe, SH_A0, SH_A1, SH_A2, ShL2,
+    directional_light_irradiance_closed_form,
+};
 pub use oracle::{ImageComparison, OracleVerdict, compare_images};
+pub use post_fx::{
+    TAA_ALPHA_MAX, TAA_ALPHA_MIN, TAA_DISOCCLUSION_RATIO, TAA_JITTER_PERIOD, TaaInput, TaaSample,
+    bloom_composite, bloom_extract, clip_aabb, gaussian_blur_3x3, halton, jitter_for_frame,
+    neighbourhood_ycgco_aabb, rgb_to_ycgco, ssao_apply, ssao_factor, taa_resolve,
+    taa_resolve_pixel, tonemap_aces, ycgco_to_rgb,
+};
 pub use rasterize::{Vertex, Viewport, clear, rasterize_triangle};
 pub use sample::{
     GoldenScene, cluster_lights_scene, combined_deferred_scene, golden_triangle_scene,

@@ -34,6 +34,18 @@
 //! `Texture` / `BindlessHeap`, never `wgpu::*` (ADR-049 boundary).
 //! No concrete pass is registered yet; PR 3 lands the first one
 //! (deferred G-buffer + cluster lights + CSM).
+//!
+//! ## Phase 5 PR 4 status
+//!
+//! Five additional Track-A passes wire the IBL + post-FX chain:
+//! [`SsaoPass`], [`IblPass`], [`TaaPass`], [`BloomPass`], and
+//! [`TonemapPass`]. Together with the PR-3 passes they form the
+//! canonical scheduling order documented in [`passes`]. New resource
+//! tags: [`resources::IblProbeSet`], [`resources::BrdfLut`],
+//! [`resources::SsaoTexture`], [`resources::TaaHistory`],
+//! [`resources::TaaResolvedColor`], [`resources::BloomTexture`],
+//! [`resources::TonemappedColor`]. CPU oracles live in
+//! `engine_raster::ibl` and `engine_raster::post_fx`.
 
 pub mod passes;
 pub mod render_graph;
@@ -41,12 +53,14 @@ pub mod resources;
 
 pub use engine_gpu as gpu;
 pub use passes::{
-    ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, LightingAccumulationPass,
+    BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, IblPass,
+    LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass,
 };
 pub use render_graph::{
     Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind, ResourceSet, Track,
 };
 pub use resources::{
-    ClusterCells, DepthBuffer, GBufferAlbedoRoughness, GBufferMotionDepth, GBufferNormalMetallic,
-    IndirectDrawBuffer, LightSsbo, LitColor, RenderQueue, ShadowAtlas, ShadowCasters,
+    BloomTexture, BrdfLut, ClusterCells, DepthBuffer, GBufferAlbedoRoughness, GBufferMotionDepth,
+    GBufferNormalMetallic, IblProbeSet, IndirectDrawBuffer, LightSsbo, LitColor, RenderQueue,
+    ShadowAtlas, ShadowCasters, SsaoTexture, TaaHistory, TaaResolvedColor, TonemappedColor,
 };
