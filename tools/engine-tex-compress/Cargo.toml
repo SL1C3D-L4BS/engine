@@ -1,12 +1,13 @@
 [package]
-name = "engine-render"
+name = "engine-tex-compress"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-engine-gpu = { workspace = true }
+engine-asset = { workspace = true }
+intel_tex_2 = { workspace = true }
 
 [lints]
 workspace = true

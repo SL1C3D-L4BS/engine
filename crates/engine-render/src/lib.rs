@@ -26,9 +26,18 @@
 //! software rasterizer in `testbed/engine-raster`. Subsequent PRs
 //! 2–6 wire concrete passes (depth pre-pass, GBuffer fill, CSM,
 //! shading, TAA, upscale) into the graph.
+//!
+//! ## Phase 5 PR 2 status
+//!
+//! [`engine_gpu`] is now a direct dependency — the GPU-backed pass
+//! types declared in PR 3+ name `engine_gpu::Device` / `Buffer` /
+//! `Texture` / `BindlessHeap`, never `wgpu::*` (ADR-049 boundary).
+//! No concrete pass is registered yet; PR 3 lands the first one
+//! (deferred G-buffer + cluster lights + CSM).
 
 pub mod render_graph;
 
+pub use engine_gpu as gpu;
 pub use render_graph::{
     Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind, ResourceSet, Track,
 };

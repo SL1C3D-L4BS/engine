@@ -1,0 +1,15 @@
+[package]
+name = "engine-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+engine-core = { workspace = true }
+engine-platform = { workspace = true }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+
+[lints]
+workspace = true

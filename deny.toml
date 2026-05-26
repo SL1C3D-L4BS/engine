@@ -11,6 +11,11 @@ allow = [
     "Zlib",
     "ISC",
     "Unicode-3.0",
+    # Public-domain dedication; pulled in transitively by `naga`
+    # (wgpu's shader frontend, via `hexf-parse`) as of Phase 5 PR 2.
+    # CC0-1.0 is FSF Free/Libre and equivalent to "more permissive
+    # than MIT" — accepting it keeps the wgpu dep graph green.
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 

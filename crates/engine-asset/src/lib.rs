@@ -17,6 +17,8 @@
 //! - [`pak`] — pak archives and the overlay/kill-switch [`PakSet`].
 //! - [`handle`] — typed handles and the hot-reloading [`AssetServer`].
 //! - [`sign`] — Ed25519 pak signing and verification.
+//! - [`texture`] — on-disk [`TextureMeta`] header for compressed BC blobs
+//!   (ADR-045 §4).
 //!
 //! # Out of scope
 //!
@@ -29,9 +31,11 @@ pub mod hash;
 pub mod pak;
 pub mod sign;
 pub mod store;
+pub mod texture;
 
 pub use handle::{Asset, AssetError, AssetServer, Handle};
 pub use hash::ContentHash;
 pub use pak::{Pak, PakBuilder, PakError, PakSet};
 pub use sign::{PakSigner, verify};
 pub use store::ContentStore;
+pub use texture::{ChannelRole, TEXTURE_META_BYTES, TexExtent, TexFormat, TextureMeta};

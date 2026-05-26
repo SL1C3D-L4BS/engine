@@ -10,6 +10,7 @@ members = [
     "testbed/engine-raster",
     "tools/cache-observatory",
     "tools/engine-shader",
+    "tools/engine-tex-compress",
     "tools/sampling-profiler",
 ]
 
@@ -30,6 +31,7 @@ engine-asset = { path = "crates/engine-asset" }
 engine-telemetry = { path = "crates/engine-telemetry" }
 engine-i18n = { path = "crates/engine-i18n" }
 engine-render = { path = "crates/engine-render" }
+engine-gpu = { path = "crates/engine-gpu" }
 engine-physics = { path = "crates/engine-physics" }
 engine-audio = { path = "crates/engine-audio" }
 engine-net = { path = "crates/engine-net" }
@@ -52,6 +54,25 @@ criterion = { version = "0.5", default-features = false }
 # golden can take a digest over its compiled corpus without each crate
 # pinning its own version (ADR-034).
 blake3 = { version = "1", default-features = false }
+
+# wgpu — single permissible consumer is `engine-gpu` (ADR-049). The
+# `wgpu::` boundary CI guard in `.github/workflows/ci.yml` rejects use
+# anywhere else. Pinned at 29.x per ADR-049 §6's "latest released
+# version at Phase 5 PR 2 land time" clause (ADR text quoted 0.20 from
+# May 2026; ecosystem moved on). Major-version bumps require an ADR
+# amendment.
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+
+# raw-window-handle 0.6 — only `engine-gpu::swapchain` touches it,
+# routed through wgpu's `SurfaceTarget`. Owned-discipline boundary:
+# game/editor code passes a handle struct; the swapchain never
+# crosses the boundary.
+raw-window-handle = "0.6"
+
+# Asset-compression CLI for BC{4,5,7} (ADR-045 §4). Linked only into
+# `tools/engine-tex-compress/`; engine runtime never sees it. Subprocess
+# pattern mirrors ADR-019 (asset sandbox) and ADR-037 (slangc).
+intel_tex_2 = "0.5"
 
 # Workspace-wide lints. The foundation crates opt in via `[lints] workspace =
 # true`; documentation is a deliverable (spec XX.6), so undocumented public
