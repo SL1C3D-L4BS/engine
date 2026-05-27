@@ -34,6 +34,25 @@ pub const CLUSTER_ASSIGN_WGSL: &str = include_str!("../shaders/cluster_assign.wg
 /// LightingAccumulationPass full-screen Cook-Torrance shader.
 pub const LIGHTING_WGSL: &str = include_str!("../shaders/lighting.wgsl");
 
+/// SsaoPass 8-tap Fibonacci kernel SSAO compute.
+pub const SSAO_WGSL: &str = include_str!("../shaders/ssao.wgsl");
+
+/// BrdfLutBake one-shot 512² LUT bake.
+pub const BRDF_LUT_BAKE_WGSL: &str = include_str!("../shaders/brdf_lut_bake.wgsl");
+
+/// IblPass L2 SH evaluation + split-sum specular.
+pub const IBL_EVALUATE_WGSL: &str = include_str!("../shaders/ibl_evaluate.wgsl");
+
+/// TaaPass temporal AA resolve.
+pub const TAA_RESOLVE_WGSL: &str = include_str!("../shaders/taa_resolve.wgsl");
+
+/// BloomPass soft-knee extract + downsample/upsample chain
+/// (three entry points: `cs_extract`, `cs_downsample`, `cs_upsample`).
+pub const BLOOM_WGSL: &str = include_str!("../shaders/bloom.wgsl");
+
+/// TonemapPass ACES filmic.
+pub const TONEMAP_WGSL: &str = include_str!("../shaders/tonemap.wgsl");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +126,59 @@ mod tests {
         assert_contains(LIGHTING_WGSL, "smith_g", "lighting.wgsl");
         assert_contains(LIGHTING_WGSL, "schlick_f", "lighting.wgsl");
         assert_contains(LIGHTING_WGSL, "cook_torrance", "lighting.wgsl");
+    }
+
+    #[test]
+    fn ssao_shader_uses_fibonacci_kernel() {
+        assert_contains(SSAO_WGSL, "@compute", "ssao.wgsl");
+        assert_contains(SSAO_WGSL, "SSAO_KERNEL_TAPS : u32 = 8u", "ssao.wgsl");
+        assert_contains(SSAO_WGSL, "fn cs_main", "ssao.wgsl");
+    }
+
+    #[test]
+    fn brdf_lut_bake_uses_hammersley_importance_sample() {
+        assert_contains(BRDF_LUT_BAKE_WGSL, "@compute", "brdf_lut_bake.wgsl");
+        assert_contains(BRDF_LUT_BAKE_WGSL, "hammersley", "brdf_lut_bake.wgsl");
+        assert_contains(
+            BRDF_LUT_BAKE_WGSL,
+            "ggx_importance_sample",
+            "brdf_lut_bake.wgsl",
+        );
+        assert_contains(BRDF_LUT_BAKE_WGSL, "integrate_brdf", "brdf_lut_bake.wgsl");
+    }
+
+    #[test]
+    fn ibl_shader_evaluates_l2_sh() {
+        assert_contains(IBL_EVALUATE_WGSL, "@compute", "ibl_evaluate.wgsl");
+        assert_contains(IBL_EVALUATE_WGSL, "evaluate_sh", "ibl_evaluate.wgsl");
+        assert_contains(IBL_EVALUATE_WGSL, "sh_coeffs", "ibl_evaluate.wgsl");
+    }
+
+    #[test]
+    fn taa_shader_clips_in_ycgco_with_disocclusion() {
+        assert_contains(TAA_RESOLVE_WGSL, "@compute", "taa_resolve.wgsl");
+        assert_contains(TAA_RESOLVE_WGSL, "rgb_to_ycgco", "taa_resolve.wgsl");
+        assert_contains(TAA_RESOLVE_WGSL, "ycgco_to_rgb", "taa_resolve.wgsl");
+        assert_contains(
+            TAA_RESOLVE_WGSL,
+            "disocclusion_threshold",
+            "taa_resolve.wgsl",
+        );
+    }
+
+    #[test]
+    fn bloom_shader_has_three_entry_points() {
+        assert_contains(BLOOM_WGSL, "fn cs_extract", "bloom.wgsl");
+        assert_contains(BLOOM_WGSL, "fn cs_downsample", "bloom.wgsl");
+        assert_contains(BLOOM_WGSL, "fn cs_upsample", "bloom.wgsl");
+    }
+
+    #[test]
+    fn tonemap_shader_implements_aces_filmic() {
+        assert_contains(TONEMAP_WGSL, "@compute", "tonemap.wgsl");
+        assert_contains(TONEMAP_WGSL, "aces_input", "tonemap.wgsl");
+        assert_contains(TONEMAP_WGSL, "rrt_odt_fit", "tonemap.wgsl");
+        assert_contains(TONEMAP_WGSL, "aces_output", "tonemap.wgsl");
+        assert_contains(TONEMAP_WGSL, "aces_filmic", "tonemap.wgsl");
     }
 }
