@@ -81,10 +81,7 @@ fn bilinear_falls_through_when_vendors_decline() {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));
         let logger: SelectionLogger<'_> = &mut *closure;
         let picked = r
-            .select_with(
-                |p| matches!(p.kind(), UpscalerKind::OwnedBilinear),
-                logger,
-            )
+            .select_with(|p| matches!(p.kind(), UpscalerKind::OwnedBilinear), logger)
             .expect("bilinear must be selected");
         picked.kind()
     };

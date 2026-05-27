@@ -70,30 +70,33 @@ the same shape as ADR-049's `wgpu::` boundary guard. Texture decoders
 the glTF crate pulls in transitively (e.g. `image`, `png`, `jpeg-
 decoder`) are also subprocess-only — the runtime never decodes PNG.
 
-### 3. Sandbox shape (`engine_platform::sandbox`)
+### 3. Sandbox shape
 
-The binary spawns under the same seccomp-bpf / AppContainer /
-sandbox-exec profile as the slangc and texture-compress wrappers
-(per ADR-019). Specifically:
+The binary inherits the same subprocess-isolation discipline as the
+slangc and texture-compress wrappers (per ADR-019):
 
 - **Cleared environment.** `Command::env_clear()` with
-  `LANG=C.UTF-8` forwarded.
+  `LANG=C.UTF-8` forwarded — applied by the editor's subprocess
+  wrapper at spawn time.
 - **Closed stdin.** `Stdio::null()`.
 - **Absolute path resolution.** The editor (or build script)
   resolves the binary path once; subsequent spawns reuse it.
-- **Wall-clock timeout.** 60 s default (glTF parse + texture
-  decode + EMSH emit on a large scene model is realistic; the
-  30 s default from ADR-019 is too tight for big assets).
-- **No network.** seccomp blocks `socket`, `connect`, `bind`,
-  `recvfrom`, `sendto`.
-- **No fork/exec.** seccomp blocks `clone`, `fork`, `execve`,
-  `execveat`.
-- **No fs writes outside the output directory.** seccomp allows
-  `openat` only for read on the input, write on the output dir,
-  read on system libs (allowlisted).
+- **Wall-clock timeout.** 60 s default in the editor wrapper (glTF
+  parse + texture decode + EMSH emit on a large scene model is
+  realistic; the 30 s default from ADR-019 is too tight for big
+  assets).
+- **Subprocess boundary.** The binary itself is the isolation unit
+  — a parser crash in `gltf` cannot crash the editor; the editor
+  surfaces it as a typed exit code per §6.
 
-The `engine_platform::sandbox` module already hosts the slangc /
-tex-compress profile; the mesh-import filter is its sibling.
+In-process seccomp-bpf (Linux) / AppContainer (Windows) /
+sandbox-exec (macOS) filtering — the syscall-restricted profile
+ADR-019 §Decision describes — is a future addition. The
+`engine_platform::sandbox` module that would host it does not exist
+as of Phase 6 PR 1; adding it is a Phase 7+ work item with
+engine-platform scope. Today the subprocess boundary is the security
+property the editor relies on, matching the as-shipped behaviour of
+the slangc and texture-compress wrappers.
 
 ### 4. CLI shape
 
@@ -189,8 +192,9 @@ at emit time to avoid wasted compression work).
 - Adds `image`, `png`, `jpeg-decoder`, and similar transitive deps
   to the workspace lockfile (via `gltf`). They are *subprocess-only*
   by guard; the runtime crates cannot import them.
-- `engine_platform::sandbox` gains a mesh-import seccomp profile —
-  one additional allowlist entry (write-syscalls on the output dir).
+- `engine_platform::sandbox` (when it lands; Phase 7+) will gain a
+  mesh-import seccomp profile — one additional allowlist entry
+  (write-syscalls on the output dir). Phase 6 PR 1 ships without it.
 - `deny.toml` may need a license clarification entry for `gltf` and
   its transitive `image` (both MIT/Apache-2.0); confirmed
   permissive.

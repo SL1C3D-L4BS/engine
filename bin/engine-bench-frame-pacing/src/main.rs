@@ -203,8 +203,8 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
                 let path = PathBuf::from(v);
                 let body = std::fs::read_to_string(&path)
                     .map_err(|e| format!("--scene: read {path:?}: {e}"))?;
-                let parsed = scene::parse(&body)
-                    .map_err(|e| format!("--scene: parse {path:?}: {e}"))?;
+                let parsed =
+                    scene::parse(&body).map_err(|e| format!("--scene: parse {path:?}: {e}"))?;
                 let hash_hex = scene::scene_hash_hex(body.as_bytes());
                 run_opts.frames = parsed.frames;
                 run_opts.input_extent = parsed.internal_extent;
@@ -220,9 +220,7 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
                 let v = argv
                     .get(i + 1)
                     .ok_or_else(|| "--frames requires a value".to_string())?;
-                run_opts.frames = v
-                    .parse()
-                    .map_err(|_| format!("bad --frames value: {v}"))?;
+                run_opts.frames = v.parse().map_err(|_| format!("bad --frames value: {v}"))?;
                 i += 1;
             }
             "--input" => {
@@ -250,18 +248,15 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
                 let v = argv
                     .get(i + 1)
                     .ok_or_else(|| "--p99 requires a value".to_string())?;
-                gate_p99_override =
-                    Some(v.parse().map_err(|_| format!("bad --p99 value: {v}"))?);
+                gate_p99_override = Some(v.parse().map_err(|_| format!("bad --p99 value: {v}"))?);
                 i += 1;
             }
             "--stddev" => {
                 let v = argv
                     .get(i + 1)
                     .ok_or_else(|| "--stddev requires a value".to_string())?;
-                gate_stddev_override = Some(
-                    v.parse()
-                        .map_err(|_| format!("bad --stddev value: {v}"))?,
-                );
+                gate_stddev_override =
+                    Some(v.parse().map_err(|_| format!("bad --stddev value: {v}"))?);
                 i += 1;
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -275,9 +270,7 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
             }
             Ok(Mode::Run(run_opts))
         }
-        Some("gate") if run_opts.scene.is_some() => {
-            Err("--scene is only valid with --run".into())
-        }
+        Some("gate") if run_opts.scene.is_some() => Err("--scene is only valid with --run".into()),
         Some("gate") => {
             // Resolution: file < explicit flag < spec default. Start at
             // the spec defaults; overlay the file if present; overlay
@@ -493,11 +486,7 @@ mod tests {
         // Write a budgets file to a temp path with non-default values.
         let dir = std::env::temp_dir();
         let path = dir.join("engine-bench-frame-pacing-test-budgets.toml");
-        std::fs::write(
-            &path,
-            "[budgets]\np99_ms = 12.5\nstddev_ms = 0.75\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[budgets]\np99_ms = 12.5\nstddev_ms = 0.75\n").unwrap();
         let m = parse_args(&[
             "--gate".into(),
             "report.json".into(),
@@ -519,11 +508,7 @@ mod tests {
         // CLI flags win over the file's contents (file < explicit flag).
         let dir = std::env::temp_dir();
         let path = dir.join("engine-bench-frame-pacing-test-budgets-2.toml");
-        std::fs::write(
-            &path,
-            "[budgets]\np99_ms = 12.5\nstddev_ms = 0.75\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[budgets]\np99_ms = 12.5\nstddev_ms = 0.75\n").unwrap();
         let m = parse_args(&[
             "--gate".into(),
             "report.json".into(),

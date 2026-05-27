@@ -524,9 +524,7 @@ impl<'a> Checker<'a> {
                 };
                 if pairs.is_empty() {
                     match (k_hint, v_hint) {
-                        (Some(k), Some(v)) => {
-                            Type::Map(Box::new(k.clone()), Box::new(v.clone()))
-                        }
+                        (Some(k), Some(v)) => Type::Map(Box::new(k.clone()), Box::new(v.clone())),
                         _ => {
                             self.diags.emit(Diagnostic::error(
                                 span,

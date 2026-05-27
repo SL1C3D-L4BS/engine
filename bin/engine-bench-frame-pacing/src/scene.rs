@@ -420,10 +420,7 @@ FramePacingScene(
     #[test]
     fn scene_hash_hex_matches_blake3_of_bytes() {
         // Hand-computed: the empty input's hash.
-        assert_eq!(
-            scene_hash_hex(b""),
-            blake3::hash(b"").to_hex().to_string()
-        );
+        assert_eq!(scene_hash_hex(b""), blake3::hash(b"").to_hex().to_string());
         // Trivial determinism: same input → same hex.
         let a = scene_hash_hex(CANONICAL.as_bytes());
         let b = scene_hash_hex(CANONICAL.as_bytes());

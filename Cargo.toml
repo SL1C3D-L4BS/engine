@@ -10,6 +10,7 @@ members = [
     "crates/*",
     "testbed/engine-raster",
     "tools/cache-observatory",
+    "tools/engine-mesh-import",
     "tools/engine-shader",
     "tools/engine-tex-compress",
     "tools/sampling-profiler",
@@ -74,6 +75,16 @@ raw-window-handle = "0.6"
 # `tools/engine-tex-compress/`; engine runtime never sees it. Subprocess
 # pattern mirrors ADR-019 (asset sandbox) and ADR-037 (slangc).
 intel_tex_2 = "0.5"
+
+# glTF parser for the mesh import CLI (ADR-062). Linked only into
+# `tools/engine-mesh-import/`; the engine runtime never sees it. A CI
+# grep guard in `.github/workflows/ci.yml` rejects `gltf::|use gltf\b`
+# outside that tool — mirrors ADR-049's `wgpu::` boundary guard.
+gltf = { version = "1.4", default-features = false, features = [
+    "import",
+    "utils",
+    "names",
+] }
 
 # Workspace-wide lints. The foundation crates opt in via `[lints] workspace =
 # true`; documentation is a deliverable (spec XX.6), so undocumented public

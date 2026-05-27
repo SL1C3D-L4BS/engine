@@ -70,8 +70,7 @@ fn box_filter_downsample_2x(
             let mut acc = Vec3::ZERO;
             for ddy in 0..2 {
                 for ddx in 0..2 {
-                    let i =
-                        ((sy + ddy) as usize) * (src_w as usize) + ((sx + ddx) as usize);
+                    let i = ((sy + ddy) as usize) * (src_w as usize) + ((sx + ddx) as usize);
                     acc.x += src[i].x;
                     acc.y += src[i].y;
                     acc.z += src[i].z;

@@ -2,7 +2,7 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 5** (RENDERING
+This repository is the monorepo through **Phase 6 PR 1** (RENDERING
 FOUNDATION, Track A — deferred PBR, software rasterizer oracle,
 RX-580 @ 60 FPS @ 1440p milestone). The crate tree, levels, and
 architecture follow the authoritative specification:
@@ -252,6 +252,28 @@ PR 6 also closes two audit follow-ups:
   surface from the audit.
 
 **Engine Core v0.2** is tagged at the close of Phase 5.
+
+Phase 6 (RENDERING FOUNDATION, Track A, Part 2) is in progress per
+ADR-068's six-PR slicing:
+
+- **Pre-Phase-6 design sweep.** ADRs 061–068 lock the GPU pass
+  contracts, the vendor upscaler binding discipline, the owned ONNX
+  upscaler, the mesh + material owned formats, the glTF importer
+  subprocess, and the shader-to-pipeline binding surface (eight
+  ADRs, 2 278 lines). No code; pre-Phase-6 design lockdown.
+- **PR 1 — Mesh + material asset formats + glTF importer subprocess.**
+  `engine-asset` gains `MeshMeta` (`EMSH`, 24-byte header per ADR-061
+  §1) and `MaterialMeta` (`EMAT`, 24-byte header per ADR-061 §2).
+  `tools/engine-mesh-import/` is a new workspace member that wraps
+  the `gltf` 1.4 crate as a subprocess CLI per ADR-062: owned arg
+  parser, owned JSON manifest, typed exit codes for parser-crash /
+  schema-invalid / unsupported / io failures, smoke + determinism +
+  red-team coverage. A new CI grep guard in `.github/workflows/ci.yml`
+  rejects `gltf::` outside the importer directory, mirroring
+  ADR-049's wgpu boundary. `docs/architecture/engine-asset.md`
+  expanded to document the new module layout, the owned-binary-format
+  recipe, and the importer subprocess discipline. Tests: 522 → 561
+  (+39).
 
 The upper layers (physics, audio, net, ai, editor, hub, ui, api,
 plugin-api) remain stubs and are built across Phases 6+ per the

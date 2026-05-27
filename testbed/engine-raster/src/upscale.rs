@@ -61,7 +61,10 @@ pub fn bilinear_upscale(
     dst_w: u32,
     dst_h: u32,
 ) {
-    assert!(src_w > 0 && src_h > 0, "bilinear_upscale: zero source extent");
+    assert!(
+        src_w > 0 && src_h > 0,
+        "bilinear_upscale: zero source extent"
+    );
     assert!(dst_w > 0 && dst_h > 0, "bilinear_upscale: zero dest extent");
     assert_eq!(
         src.len(),
@@ -198,7 +201,12 @@ mod tests {
         // Source is a 4×1 horizontal gradient. Upscaled output must
         // remain non-decreasing left-to-right (bilinear is linear in
         // each axis and the gradient is monotonic).
-        let src = vec![v(0.0, 0.0, 0.0), v(0.25, 0.0, 0.0), v(0.5, 0.0, 0.0), v(1.0, 0.0, 0.0)];
+        let src = vec![
+            v(0.0, 0.0, 0.0),
+            v(0.25, 0.0, 0.0),
+            v(0.5, 0.0, 0.0),
+            v(1.0, 0.0, 0.0),
+        ];
         let dst = bilinear_upscale_to_vec(&src, 4, 1, 12, 1);
         for w in dst.windows(2) {
             assert!(w[1].x + 1e-6 >= w[0].x, "non-monotone: {:?}", dst);

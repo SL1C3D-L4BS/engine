@@ -190,7 +190,7 @@ fn parse_number_after(s: &str, start: usize) -> Option<f64> {
     let rest = s.get(start..)?.trim_start();
     // Number ends at the first delimiter or whitespace.
     let end = rest
-        .find(|c: char| matches!(c, ',' | ']' | '}' | ' ' | '\t' | '\n' | '\r'))
+        .find([',', ']', '}', ' ', '\t', '\n', '\r'])
         .unwrap_or(rest.len());
     rest[..end].parse::<f64>().ok()
 }

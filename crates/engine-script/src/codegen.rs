@@ -760,5 +760,5 @@ fn compile_closure_body(
     };
     let fn_idx = builder.function_count();
     builder.push_function(bc);
-    fn_idx as u16
+    fn_idx
 }

@@ -337,6 +337,27 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against direct gltf use outside engine-mesh-import (ADR-062)
+        run: |
+          # Phase 6 PR 1 introduces gltf as a workspace dep. The
+          # `tools/engine-mesh-import/` subprocess CLI is the single
+          # permissible consumer; the runtime crates consume
+          # engine_asset::{MeshMeta, MaterialMeta} (EMSH / EMAT) blobs
+          # produced by the importer, never raw gltf types. Same shape
+          # as ADR-049's wgpu boundary guard. The allowlist activates
+          # the first time the importer directory exists; until then
+          # the guard is a no-op.
+          hits=$(grep -rnE '\bgltf::|use gltf\b|extern crate gltf' crates bin tools testbed \
+              | grep -v -e 'tools/engine-mesh-import/' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
+              | grep -vE '\.md:' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Route mesh import through tools/engine-mesh-import — see ADR-062"
+            exit 1
+          fi
+
       - name: CI gate (build, test, lint, fmt, deny)
         run: just ci
 
