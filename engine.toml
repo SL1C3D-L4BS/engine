@@ -42,7 +42,30 @@ spec_version = "2.0"
 # surface (ArrayLit / MapLit syntax + Field / Index / StructLit /
 # Closure codegen wiring) and the missing ADR-048 pak overlay tests.
 # Engine Core v0.2 is the Phase-5 milestone tag.
-phase = "5"
+#
+# Phase 6 (RENDERING FOUNDATION, Track A, Part 2) — contract-side
+# closed 2026-05-27. Six commits implement the contracts the
+# runner-gated GPU implementation will bind against:
+# (0) pre-Phase-6 design sweep ADRs 061-068; (1) mesh + material owned
+# binary formats (EMSH + EMAT) + glTF importer subprocess
+# (ADR-061 + ADR-062); (2) shader-artefact → pipeline binding
+# (ADR-063); (3) GPU pass contracts (ADR-064 + ADR-065) — descriptor
+# layouts, MRT formats, SSBO record shapes, cluster + CSM constants
+# cross-checked against the CPU oracle in
+# `testbed/engine-raster/tests/rendering_contracts.rs`;
+# (5) OwnedOnnxTemporal cascade reservation + with_phase6_defaults()
+# (ADR-066 + ADR-067).
+#
+# Deferred to follow-ups that require the self-hosted RX 6700 XT
+# runner + vendor SDK downloads: the GPU `record()` body
+# implementations + Slang shader sources (ADR-064 + ADR-065 GPU
+# halves); the frame-pacing CI gate promotion from informational to
+# required (ADR-047 §7); the vendor SDK FFI bindings (ADR-066
+# crate/feature scaffolding); the `ort` ONNX-runtime binding
+# (ADR-067 §1) + ADR-051 deviation entry.
+#
+# Engine Core v0.3 tag pending the runner-gated work completion.
+phase = "6"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

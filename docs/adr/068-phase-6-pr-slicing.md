@@ -313,3 +313,66 @@ polish + manifest updates + docs).
   this ADR's Status transitions to "Closed" via an addendum
   entry in this file with the tag commit hash.
 - No code changes from this ADR alone — pure planning record.
+
+## Addendum (2026-05-27) — Phase 6 contract-side close
+
+Five PRs landed locally on 2026-05-27, closing the *contract-side* of
+Phase 6 — every layout, every cascade position, every cross-checked
+constant a future GPU + vendor SDK + ORT integration must bind
+against:
+
+- `b205450` — Pre-Phase-6 design sweep (ADRs 061-068).
+- `d70b853` — PR 1: mesh + material formats + glTF importer
+  subprocess (ADR-061 + ADR-062).
+- `eec6aa4` — PR 2: shader artefact ingest + pipeline construction
+  (ADR-063).
+- `1faa877` — PR 3+4 combined: GPU pass contracts + CPU oracle
+  cross-checks (ADR-064 + ADR-065). The two ADRs' contract surfaces
+  ship together because both are CPU-only Rust types validated
+  against the same oracle constants.
+- `1dfd950` — PR 5: OwnedOnnxTemporal cascade reservation +
+  `with_phase6_defaults()` (ADR-066 cascade-position half + ADR-067
+  trait-surface half).
+- *(this commit)* — Phase 6 contract close: `engine.toml` bump to
+  `phase = "6"` + README Status section + this addendum.
+
+Tests: 522 → 581 (+59) across the five implementation PRs. Every PR
+ended `just ci` green (build + test + clippy `-D warnings` +
+fmt-check + cargo-deny).
+
+### Deferred to runner / SDK-gated follow-ups
+
+The original ADR-068 slicing called for PR 3's "first visible image"
+deliverable (real GPU `record()` body wiring + 3 oracle fixtures
+rendered through the GPU path), PR 4's post-FX `record()` bodies,
+PR 5's vendor SDK FFI + ONNX integration, and PR 6's frame-pacing
+gate promotion. Each of those requires hardware the CI default job
+does not have:
+
+- **PR 3.5 / 4.5 — GPU `record()` bodies + Slang shader sources.**
+  Pixel-parity oracles (ADR-046) cannot validate GPU output without
+  a real `engine_gpu::Device` (CI builds wgpu without backend
+  features per the `engine-gpu` architecture doc); landing untested
+  GPU code would defeat ADR-046's purpose.
+- **PR 5.5 — Vendor upscaler FFI + ONNX integration.** DLSS / FSR /
+  XeSS SDKs require download + license acceptance + binary blobs
+  not on crates.io. The `ort` ONNX runtime requires its own native
+  binaries. Git LFS setup for the bundled `temporal_upscaler_v1.onnx`
+  model is environmental.
+- **PR 6.5 — Frame-pacing CI gate promotion.** Per ADR-047 §7 the
+  gate flips to required when the self-hosted RX 6700 XT runner
+  comes online + a first green baseline lands. The runbook at
+  `docs/runbooks/frame-pacing-runner.md` is the provisioning record.
+
+### Status
+
+This ADR remains *Accepted* (not yet closed) because PR 6's
+runner-dependent deliverables are unfulfilled. When the runner comes
+online + the GPU bodies land + the vendor SDKs integrate + the
+frame-pacing gate goes required, a final addendum lands here with
+the Engine Core v0.3 tag commit hash and the Status flips to
+*Closed*.
+
+The contract surface this PR cohort landed is the prerequisite for
+those follow-ups — the future "land GPU bodies" PR is a binding
+exercise against types this PR fixed, not a rewrite of the contract.

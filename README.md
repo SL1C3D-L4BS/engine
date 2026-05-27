@@ -2,7 +2,8 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 6 PR 1** (RENDERING
+This repository is the monorepo through **Phase 6 contract-side close**
+(RENDERING
 FOUNDATION, Track A — deferred PBR, software rasterizer oracle,
 RX-580 @ 60 FPS @ 1440p milestone). The crate tree, levels, and
 architecture follow the authoritative specification:
@@ -253,28 +254,69 @@ PR 6 also closes two audit follow-ups:
 
 **Engine Core v0.2** is tagged at the close of Phase 5.
 
-Phase 6 (RENDERING FOUNDATION, Track A, Part 2) is in progress per
-ADR-068's six-PR slicing:
+Phase 6 (RENDERING FOUNDATION, Track A, Part 2) contract-side closed
+2026-05-27 across the ADR-068 six-PR slicing:
 
 - **Pre-Phase-6 design sweep.** ADRs 061–068 lock the GPU pass
   contracts, the vendor upscaler binding discipline, the owned ONNX
   upscaler, the mesh + material owned formats, the glTF importer
-  subprocess, and the shader-to-pipeline binding surface (eight
-  ADRs, 2 278 lines). No code; pre-Phase-6 design lockdown.
+  subprocess, and the shader-to-pipeline binding surface (eight ADRs,
+  2 278 lines). No code; pre-Phase-6 design lockdown.
 - **PR 1 — Mesh + material asset formats + glTF importer subprocess.**
-  `engine-asset` gains `MeshMeta` (`EMSH`, 24-byte header per ADR-061
-  §1) and `MaterialMeta` (`EMAT`, 24-byte header per ADR-061 §2).
-  `tools/engine-mesh-import/` is a new workspace member that wraps
-  the `gltf` 1.4 crate as a subprocess CLI per ADR-062: owned arg
-  parser, owned JSON manifest, typed exit codes for parser-crash /
-  schema-invalid / unsupported / io failures, smoke + determinism +
-  red-team coverage. A new CI grep guard in `.github/workflows/ci.yml`
-  rejects `gltf::` outside the importer directory, mirroring
-  ADR-049's wgpu boundary. `docs/architecture/engine-asset.md`
-  expanded to document the new module layout, the owned-binary-format
-  recipe, and the importer subprocess discipline. Tests: 522 → 561
-  (+39).
+  `engine-asset` gains `MeshMeta` (`EMSH`, 24-byte header per
+  ADR-061 §1) and `MaterialMeta` (`EMAT`, 24-byte header per
+  ADR-061 §2). `tools/engine-mesh-import/` wraps the `gltf` 1.4
+  crate as a subprocess CLI per ADR-062: owned arg parser, owned
+  JSON manifest, typed exit codes for parser-crash / schema-invalid
+  / unsupported / io failures, smoke + determinism + red-team
+  coverage. New CI grep guard rejects `gltf::` outside the importer
+  directory, mirroring ADR-049's wgpu boundary.
+- **PR 2 — Shader artefact ingest + pipeline-construction wiring.**
+  `engine-render::shader` lands `ShaderArtefactSet` +
+  `build_render_pipeline` + `build_compute_pipeline` per ADR-063.
+  Selects the WGSL artefact (the canonical wgpu-backed engine_gpu
+  target); widens to SPIR-V/DXIL/MSL when native backends ship.
+- **PR 3 — GPU pass contracts (geometry / lighting / post-FX).**
+  `engine-render::contracts` pins the ADR-064 + ADR-065 surface
+  in Rust: `PushConstants` (64 B), `CsmUniforms`, `ClusterUniforms`
+  + `ClusterCell` + `LightRecord` SSBO records, MRT format
+  constants, SSAO / IBL / TAA / Bloom / Tonemap uniform structs,
+  `IblProbeRecord`. `testbed/engine-raster/tests/rendering_contracts.rs`
+  cross-checks every grid + cascade + cap constant against the CPU
+  oracle's source-of-truth values so a future shader edit can't
+  silently desync.
+- **PR 5 — OwnedOnnxTemporal cascade reservation.** The trait
+  discriminant Phase 5 PR 5 reserved (`UpscalerKind::OwnedOnnx`)
+  gains its provider impl. `UpscalerRegistry::with_phase6_defaults()`
+  registers DLSS → FSR → XeSS → OwnedOnnxTemporal → OwnedBilinear
+  per ADR-066 §6 priority. `with_phase5_defaults()` deprecated.
 
+**Deferred to follow-up PRs** that require the self-hosted RX 6700 XT
+runner + vendor SDK downloads + `ort` + Git LFS setup:
+
+- **Phase 6 PR 3.5 / 4.5 — GPU `record()` body implementations**
+  (CullPass / CsmShadowPass / GBufferPass / ClusterLightPass /
+  LightingAccumulationPass + SsaoPass / IblPass / TaaPass / BloomPass
+  / TonemapPass) + Slang shader sources (`crates/engine-render/
+  shaders/*.slang`) + 3 + 3 pixel-parity oracle fixtures per
+  ADR-064 / ADR-065 §Verification. Pixel parity cannot be validated
+  in CI without a GPU; the runner is the missing piece.
+- **Phase 6 PR 5.5 — Vendor upscaler FFI + ONNX integration.** The
+  `crates/engine-upscale-vendor/` crate split per ADR-066 §1; the
+  vendored `tools/upscaler-vendor-sdks/{streamline,fsr,xess,ort}/`
+  `*-sys` crates; the bundled `temporal_upscaler_v1.onnx` model via
+  Git LFS; the `engine.toml` `[upscaler]` runtime reader; the
+  ADR-051 amendment adding the ORT deviation entry per ADR-067 §5.
+- **Phase 6 PR 6.5 — Frame-pacing gate promotion.** Flip
+  `.github/workflows/ci.yml` `frame_pacing` job from
+  `continue-on-error: true` to required (ADR-047 §7) once the
+  runner is provisioned per
+  `docs/runbooks/frame-pacing-runner.md` and the first green
+  baseline lands.
+- **Engine Core v0.3 tag** ships when the runner-gated deliverables
+  above complete.
+
+`engine.toml` reads `phase = "6"` to mark the contract-side closure.
 The upper layers (physics, audio, net, ai, editor, hub, ui, api,
-plugin-api) remain stubs and are built across Phases 6+ per the
+plugin-api) remain stubs and are built across Phases 7+ per the
 spec's level and phase map.
