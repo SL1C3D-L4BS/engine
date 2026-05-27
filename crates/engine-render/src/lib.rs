@@ -80,6 +80,7 @@ pub mod passes;
 pub mod render_graph;
 pub mod resources;
 pub mod shader;
+pub mod shaders;
 pub mod upscale;
 
 pub use engine_gpu as gpu;
