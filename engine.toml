@@ -65,6 +65,18 @@ spec_version = "2.0"
 # (ADR-067 §1) + ADR-051 deviation entry.
 #
 # Engine Core v0.3 tag pending the runner-gated work completion.
+#
+# Phase 6 sub-PRs landed later 2026-05-27 (commits `bb14ac4` PR 5.5,
+# `d307c4b` PR 3.5, `f7bf287` PR 4.5) bringing every CI-validatable
+# deliverable into the tree: the engine-upscale-vendor crate
+# scaffold + cargo feature matrix + ADR-051 ORT deviation entry,
+# plus 11 WGSL shaders (5 geometry/lighting + 6 post-FX inc. BRDF
+# LUT bake) cross-checked against the CPU oracle constants. The
+# only remaining gap to v0.3 is the single runner-validated PR
+# that wires the shaders into engine-gpu pipeline construction +
+# fills the 10 pass `record()` bodies + lands the 3+3 pixel-parity
+# fixtures + the vendor SDK / ORT binding linkage + the frame-pacing
+# gate flip. See ADR-068's "Remaining work for v0.3" addendum.
 phase = "6"
 
 [determinism]

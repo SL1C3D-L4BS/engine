@@ -314,6 +314,56 @@ polish + manifest updates + docs).
   entry in this file with the tag commit hash.
 - No code changes from this ADR alone — pure planning record.
 
+## Addendum (2026-05-27, later same day) — Phase 6 sub-PRs landed
+
+Three sub-PRs landed on top of the contract-side close to bring
+every CI-validatable deliverable into the tree:
+
+- `bb14ac4` — PR 5.5: `crates/engine-upscale-vendor/` Level-1 crate
+  scaffold per ADR-066 §1. Cargo features `dlss` / `fsr` / `xess` /
+  `ort-runtime` / `all-vendors` (all default off). Per-vendor module
+  skeletons. ADR-051 deviation entry 4 (ORT) added. `engine.toml`
+  `[upscaler]` schema documented.
+- `d307c4b` — PR 3.5: WGSL shader sources for the five geometry +
+  lighting passes (ADR-064). `cull.wgsl`, `csm_shadow.wgsl`,
+  `gbuffer.wgsl`, `cluster_assign.wgsl`, `lighting.wgsl`. Cross-
+  checked against `contracts::*` constants.
+- `f7bf287` — PR 4.5: WGSL shader sources for the five post-FX
+  passes + BRDF LUT bake (ADR-065). `ssao.wgsl`, `brdf_lut_bake.wgsl`,
+  `ibl_evaluate.wgsl`, `taa_resolve.wgsl`, `bloom.wgsl`,
+  `tonemap.wgsl`.
+
+Cumulative test delta: 581 → 596 (+15 across the three sub-PRs).
+Every commit `just ci` green.
+
+### Remaining work for v0.3 — single runner-gated PR
+
+The contract surface, the shader sources, the upscaler crate
+scaffold, and the cross-check coverage now in tree leave exactly one
+follow-up PR before Engine Core v0.3:
+
+1. Pipeline construction via `engine_render::shader::build_*_pipeline`
+   over the shaders in PR 3.5 + 4.5 + the contracts in PR 3.
+2. `record()` body wiring on each of the ten Track-A passes —
+   descriptor bind + push-constant set + draw/dispatch.
+3. Pixel-parity oracle fixtures (3 per ADR-064, 3 per ADR-065)
+   rendered through both CPU oracle and GPU path; pass/fail at
+   ADR-046's 1/255 channel + p99 ≤ 1% threshold.
+4. Vendor SDK FFI: `*-sys` crates + per-vendor `Real` provider
+   structs filling in `crates/engine-upscale-vendor/src/{dlss,fsr,xess}.rs`.
+5. ORT runtime: `ort` crate dep behind the `ort-runtime` feature;
+   bundled `temporal_upscaler_v1.onnx` via Git LFS; ADR-051 entry 4
+   marked as implemented.
+6. `engine.toml [upscaler]` runtime reader in engine-platform.
+7. `.github/workflows/ci.yml` `frame_pacing` job promoted from
+   `continue-on-error: true` to required (ADR-047 §7); first green
+   RX 6700 XT baseline at `docs/observatory/phase-6-milestone-baseline.md`.
+
+That PR's prerequisites are environmental — runner provisioning +
+SDK downloads + Git LFS setup — not engineering. When it lands, the
+Engine Core v0.3 tag ships and this ADR's Status flips to *Closed*
+with a final addendum carrying the tag commit hash.
+
 ## Addendum (2026-05-27) — Phase 6 contract-side close
 
 Five PRs landed locally on 2026-05-27, closing the *contract-side* of

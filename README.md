@@ -291,32 +291,60 @@ Phase 6 (RENDERING FOUNDATION, Track A, Part 2) contract-side closed
   registers DLSS → FSR → XeSS → OwnedOnnxTemporal → OwnedBilinear
   per ADR-066 §6 priority. `with_phase5_defaults()` deprecated.
 
-**Deferred to follow-up PRs** that require the self-hosted RX 6700 XT
-runner + vendor SDK downloads + `ort` + Git LFS setup:
+**Sub-PRs landed 2026-05-27** that complete the shader-source +
+crate-scaffold surface in advance of the runner-gated binding work:
 
-- **Phase 6 PR 3.5 / 4.5 — GPU `record()` body implementations**
-  (CullPass / CsmShadowPass / GBufferPass / ClusterLightPass /
-  LightingAccumulationPass + SsaoPass / IblPass / TaaPass / BloomPass
-  / TonemapPass) + Slang shader sources (`crates/engine-render/
-  shaders/*.slang`) + 3 + 3 pixel-parity oracle fixtures per
-  ADR-064 / ADR-065 §Verification. Pixel parity cannot be validated
-  in CI without a GPU; the runner is the missing piece.
-- **Phase 6 PR 5.5 — Vendor upscaler FFI + ONNX integration.** The
-  `crates/engine-upscale-vendor/` crate split per ADR-066 §1; the
-  vendored `tools/upscaler-vendor-sdks/{streamline,fsr,xess,ort}/`
-  `*-sys` crates; the bundled `temporal_upscaler_v1.onnx` model via
-  Git LFS; the `engine.toml` `[upscaler]` runtime reader; the
-  ADR-051 amendment adding the ORT deviation entry per ADR-067 §5.
-- **Phase 6 PR 6.5 — Frame-pacing gate promotion.** Flip
+- **PR 3.5 — WGSL shaders for geometry + lighting** (ADR-064). Five
+  shaders under `crates/engine-render/shaders/` (`cull.wgsl`,
+  `csm_shadow.wgsl`, `gbuffer.wgsl`, `cluster_assign.wgsl`,
+  `lighting.wgsl`) implementing the cull / CSM / G-buffer /
+  cluster-assign / Cook-Torrance algorithms. Cross-checked against
+  the CPU oracle's constants (32 lights/cluster, 16×9 workgroup
+  size, etc.) in unit tests. Embedded into engine-render via
+  `include_str!` in `src/shaders.rs`.
+- **PR 4.5 — WGSL shaders for post-FX** (ADR-065). Six shaders
+  (`ssao.wgsl`, `brdf_lut_bake.wgsl`, `ibl_evaluate.wgsl`,
+  `taa_resolve.wgsl`, `bloom.wgsl` with three entry points,
+  `tonemap.wgsl`) implementing 8-tap Fibonacci SSAO,
+  Hammersley + GGX-importance BRDF LUT bake, L2 SH evaluation
+  (Ramamoorthi-Hanrahan 2001), YCgCo neighbourhood-clip TAA,
+  soft-knee bloom chain, ACES filmic (Stephen Hill fit) tonemap.
+- **PR 5.5 — `crates/engine-upscale-vendor/` crate scaffold**
+  (ADR-066 §1). New Level-1 crate with per-vendor module skeletons
+  gated by cargo features (`dlss`, `fsr`, `xess`, `ort-runtime`,
+  `all-vendors`) — all default off so CI without SDKs builds
+  unchanged. `build_info()` const-fn surfaces feature flags into
+  bench reports. ADR-051 gets deviation entry 4 anticipating the
+  ORT integration. `engine.toml` `[upscaler]` schema documented.
+
+**Remaining work for Engine Core v0.3 tag** — a single runner-gated
+binding PR consumes everything above:
+
+- Pipeline construction via `engine_render::shader::build_render_pipeline`
+  / `build_compute_pipeline` (the helpers landed in PR 2). The
+  shader sources land in PR 3.5 + 4.5; the descriptor layouts land
+  in PR 3 contracts.
+- Per-pass `record()` bodies that bind descriptor sets, push
+  constants, and issue the draw / dispatch calls.
+- Pixel-parity oracle fixtures rendered through the GPU path; the
+  CPU oracle baseline is already shipping in
+  `testbed/engine-raster`. Adds 3 + 3 fixtures per ADR-064 /
+  ADR-065 §Verification.
+- Vendor SDK FFI: `*-sys` crates at
+  `tools/upscaler-vendor-sdks/{streamline,fsr,xess}/` linking the
+  vendor SDK shared libraries; per-vendor `Real` provider implementations
+  replacing the scaffold stubs in `crates/engine-upscale-vendor/src/`.
+- ONNX Runtime integration: `ort` direct dep behind the
+  `ort-runtime` cargo feature; bundled
+  `crates/engine-render/assets/onnx/temporal_upscaler_v1.onnx` model
+  via Git LFS; runtime `engine.toml` `[upscaler]` parser in
+  engine-platform.
+- Frame-pacing CI gate promotion (ADR-047 §7): flip
   `.github/workflows/ci.yml` `frame_pacing` job from
-  `continue-on-error: true` to required (ADR-047 §7) once the
-  runner is provisioned per
-  `docs/runbooks/frame-pacing-runner.md` and the first green
-  baseline lands.
-- **Engine Core v0.3 tag** ships when the runner-gated deliverables
-  above complete.
+  `continue-on-error: true` to required, contingent on the
+  self-hosted RX 6700 XT runner being provisioned per
+  `docs/runbooks/frame-pacing-runner.md`.
 
-`engine.toml` reads `phase = "6"` to mark the contract-side closure.
-The upper layers (physics, audio, net, ai, editor, hub, ui, api,
-plugin-api) remain stubs and are built across Phases 7+ per the
-spec's level and phase map.
+`engine.toml` reads `phase = "6"`. The upper layers (physics, audio,
+net, ai, editor, hub, ui, api, plugin-api) remain stubs and are built
+across Phases 7+ per the spec's level and phase map.
