@@ -317,33 +317,69 @@ crate-scaffold surface in advance of the runner-gated binding work:
   bench reports. ADR-051 gets deviation entry 4 anticipating the
   ORT integration. `engine.toml` `[upscaler]` schema documented.
 
-**Remaining work for Engine Core v0.3 tag** — a single runner-gated
-binding PR consumes everything above:
+**PR 7 — GPU pipeline binding (engineering-only, landed
+2026-05-27).** Per a two-PR split of the original v0.3 candidate
+(ADR-068 third addendum), PR 7 lands the pure-Rust work that does
+not need vendor SDKs, an ONNX model, or a GPU runner:
 
-- Pipeline construction via `engine_render::shader::build_render_pipeline`
-  / `build_compute_pipeline` (the helpers landed in PR 2). The
-  shader sources land in PR 3.5 + 4.5; the descriptor layouts land
-  in PR 3 contracts.
-- Per-pass `record()` bodies that bind descriptor sets, push
-  constants, and issue the draw / dispatch calls.
-- Pixel-parity oracle fixtures rendered through the GPU path; the
-  CPU oracle baseline is already shipping in
-  `testbed/engine-raster`. Adds 3 + 3 fixtures per ADR-064 /
-  ADR-065 §Verification.
+- `PassContext` extension with `GpuFrameContext { device, encoder }`
+  so `Pass::record` bodies bind against `engine_gpu` directly
+  (`crates/engine-render/src/render_graph.rs`).
+- Per-pass `std::sync::OnceLock` pipeline fields + `pub fn new(...)`
+  constructors on every Track-A pass struct; compute-pass `record()`
+  bodies open a `ComputePass`, set the lazy-built pipeline, and
+  issue placeholder dispatches (real dispatch counts come with PR 8's
+  resource lookups). Render-pass `record()` bodies lazy-init only
+  pending PR 8's attachment-view plumbing.
+- `wgsl_artefact_set(stage, entry, source) -> ShaderArtefactSet` — a
+  raw-WGSL bridge so the 11 hand-written shader sources flow through
+  the existing `build_{render,compute}_pipeline` helpers without a
+  `slangc` round-trip.
+- New `engine_render::init` module with `build_brdf_lut_bake_pipeline`
+  (one-shot, init-time bake — deliberately not a per-frame `Pass`)
+  and `build_all_phase6_pipelines(device) -> Phase6Pipelines`, the
+  bundle a future PR-8 pixel-parity fixture pre-warms.
+- `engine_render::upscaler_config` — owned line-oriented reader for
+  the `engine.toml [upscaler]` section
+  (`provider` ∈ {auto, dlss, fsr, xess, owned-onnx, owned-bilinear},
+  `quality` ∈ {performance, balanced, quality, ultra-quality}).
+  `UpscalerRegistry::with_phase6_defaults_from_config(&cfg)` registers
+  the forced provider + `OwnedBilinear` fallback per ADR-066 §6.
+- Integration smoke at `crates/engine-render/tests/pipeline_smoke.rs`
+  (`#[ignore]` by default; runs against a fallback-adapter device
+  when wgpu has a backend feature enabled).
+
+Tests: 596 → 610. `just ci` green. ADR-049 wgpu boundary
+preserved.
+
+**PR 8 — Engine Core v0.3 closure (deferred, runner-gated).** The
+remaining work folds into a single PR that needs environmental
+prerequisites (RX 6700 XT runner + downloaded DLSS/FSR/XeSS SDKs +
+ORT native binaries + Git LFS):
+
 - Vendor SDK FFI: `*-sys` crates at
-  `tools/upscaler-vendor-sdks/{streamline,fsr,xess}/` linking the
-  vendor SDK shared libraries; per-vendor `Real` provider implementations
-  replacing the scaffold stubs in `crates/engine-upscale-vendor/src/`.
-- ONNX Runtime integration: `ort` direct dep behind the
-  `ort-runtime` cargo feature; bundled
-  `crates/engine-render/assets/onnx/temporal_upscaler_v1.onnx` model
-  via Git LFS; runtime `engine.toml` `[upscaler]` parser in
-  engine-platform.
+  `tools/upscaler-vendor-sdks/{streamline,fsr,xess}/`; per-vendor
+  `Real` provider impls flipping `supports_stub()` to real
+  `supports(device)` probes.
+- ONNX integration: `ort` dep behind the `ort-runtime` feature;
+  bundled `crates/engine-render/assets/onnx/temporal_upscaler_v1.onnx`
+  via Git LFS; `OwnedOnnxTemporal::supports()` becomes a runtime
+  probe; ADR-051 entry 4 flips from "anticipated" to "active".
+- Six pixel-parity oracle fixtures (3 ADR-064: cube,
+  csm_4_cascade, cluster_64_lights; 3 ADR-065: ibl_probe,
+  taa_motion, post_fx_chain) rendering via both the CPU oracle
+  (`testbed/engine-raster`) and the GPU path, gated by ADR-046's
+  1/255 channel + p99 ≤ 1% threshold.
+- Real `begin_render_pass` plumbing in the render-pass bodies
+  (csm_shadow / gbuffer / lighting) plus real bind-group
+  descriptors against the WGSL `@group/@binding` annotations.
 - Frame-pacing CI gate promotion (ADR-047 §7): flip
-  `.github/workflows/ci.yml` `frame_pacing` job from
-  `continue-on-error: true` to required, contingent on the
-  self-hosted RX 6700 XT runner being provisioned per
-  `docs/runbooks/frame-pacing-runner.md`.
+  `.github/workflows/ci.yml` `frame_pacing` from
+  `continue-on-error: true` to required when the runner is
+  provisioned per `docs/runbooks/frame-pacing-runner.md`.
+- `engine.toml` `phase = "6"` → `"6-closed"`; README v0.3 paragraph;
+  ADR-068 final close addendum carrying the tag commit hash.
+- `git tag v0.3` (post-merge user action).
 
 `engine.toml` reads `phase = "6"`. The upper layers (physics, audio,
 net, ai, editor, hub, ui, api, plugin-api) remain stubs and are built

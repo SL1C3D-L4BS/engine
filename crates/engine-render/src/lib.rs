@@ -76,20 +76,24 @@
 //! (ADR-047 §7 informational mode; the gate activates in PR 6).
 
 pub mod contracts;
+pub mod init;
 pub mod passes;
 pub mod render_graph;
 pub mod resources;
 pub mod shader;
 pub mod shaders;
 pub mod upscale;
+pub mod upscaler_config;
 
 pub use engine_gpu as gpu;
+pub use init::{Phase6Pipelines, build_all_phase6_pipelines, build_brdf_lut_bake_pipeline};
 pub use passes::{
     BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, IblPass,
     LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass, UpscalePass,
 };
 pub use render_graph::{
-    Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind, ResourceSet, Track,
+    GpuFrameContext, Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind,
+    ResourceSet, Track,
 };
 pub use resources::{
     BloomTexture, BrdfLut, ClusterCells, DepthBuffer, GBufferAlbedoRoughness, GBufferMotionDepth,
@@ -99,9 +103,10 @@ pub use resources::{
 };
 pub use shader::{
     ComputePipelineHelperDesc, RenderPipelineHelperDesc, ShaderArtefactSet, ShaderError,
-    build_compute_pipeline, build_render_pipeline, empty_bind_group_layout,
+    build_compute_pipeline, build_render_pipeline, empty_bind_group_layout, wgsl_artefact_set,
 };
 pub use upscale::{
     OwnedBilinear, SelectionLogger, UpscaleCtx, UpscaleError, UpscaleResult, UpscalerKind,
     UpscalerProvider, UpscalerRegistry, VendorDlss, VendorFsr, VendorXess,
 };
+pub use upscaler_config::{ParseError, Provider, Quality, UpscalerConfig};

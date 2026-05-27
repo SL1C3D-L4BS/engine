@@ -426,3 +426,113 @@ the Engine Core v0.3 tag commit hash and the Status flips to
 The contract surface this PR cohort landed is the prerequisite for
 those follow-ups — the future "land GPU bodies" PR is a binding
 exercise against types this PR fixed, not a rewrite of the contract.
+
+## Addendum (2026-05-27, third pass) — Phase 6 PR 7 (engineering-only GPU pipeline binding)
+
+Per user direction, the original "single runner-gated v0.3 candidate
+PR" splits into two: **PR 7** lands the pure-Rust engineering work
+that does not need vendor SDKs, an ONNX model, or a GPU runner;
+**PR 8** lands the runner-validated closure (SDK FFI + ONNX
+integration + pixel-parity fixtures + frame-pacing gate
+promotion + v0.3 tag).
+
+### PR 7 delivered
+
+- **`PassContext` extension** — `crates/engine-render/src/render_graph.rs`
+  grew a `gpu: Option<GpuFrameContext<'a>>` field; the new
+  `GpuFrameContext { device, encoder }` is the per-frame surface
+  `Pass::record` bodies bind against. `RenderGraph::execute` accepts
+  an `Option<GpuFrameContext>` parameter and reborrows it per
+  iteration so a single encoder flows through every scheduled pass.
+- **Per-pass pipeline construction** — every Track-A pass struct in
+  `crates/engine-render/src/passes.rs` gained a private
+  `std::sync::OnceLock<{Render,Compute}Pipeline>` field and a
+  `pub fn new(...)` constructor. Compute-pass `record()` bodies open
+  a `ComputePass`, set the lazy-init pipeline, and issue a
+  placeholder dispatch; render-pass `record()` bodies lazy-init the
+  pipeline only (the current `engine_gpu` `begin_render_pass` surface
+  requires attachment `TextureView`s that the graph's transient
+  resource pool will resolve in PR 8). `BloomPass` carries three
+  OnceLocks (extract / downsample / upsample) per its three WGSL
+  entry points.
+- **WGSL → pipeline bridge** — `crates/engine-render/src/shader.rs`
+  exports `wgsl_artefact_set(stage, entry, source) ->
+  ShaderArtefactSet`, the missing wrapper that turns a hand-written
+  WGSL `&'static str` into a single-artefact `engine_shader::Bundle`
+  the existing `build_{render,compute}_pipeline` helpers accept.
+- **`init.rs` + `Phase6Pipelines`** — new module ships
+  `build_brdf_lut_bake_pipeline(device)` for the init-time BRDF LUT
+  bake (deliberately not modelled as a `Pass` because it runs once,
+  not per frame — ADR-065 §3), and `build_all_phase6_pipelines(device)
+  -> Phase6Pipelines` which assembles every Track-A + bake pipeline
+  in one call. The integration test
+  `crates/engine-render/tests/pipeline_smoke.rs` consumes this entry
+  point as a fail-fast oracle on shader-validation regressions.
+- **`engine.toml [upscaler]` runtime reader** — new
+  `crates/engine-render/src/upscaler_config.rs` parses the documented
+  schema (`provider = "auto" | "dlss" | "fsr" | "xess" |
+  "owned-onnx" | "owned-bilinear"`, `quality = "performance" |
+  "balanced" | "quality" | "ultra-quality"`). Mirrors the
+  `bin/engine-bench-frame-pacing/src/budgets.rs` line-oriented
+  pattern — no serde, no third-party TOML parser. Wired into
+  `UpscalerRegistry::with_phase6_defaults_from_config(&cfg)` which
+  registers the operator's forced provider plus `OwnedBilinear` as
+  the universal fallback.
+
+Tests: 596 → 610 (+14). `just ci` green (build + test + lint +
+fmt-check + cargo-deny). ADR-049 wgpu boundary preserved (every
+`wgpu::` mention outside `engine-gpu` is doc-comment text).
+
+### Why pixel-parity fixtures + render-pass bodies wait for PR 8
+
+`engine_gpu::CommandEncoder::begin_render_pass` requires a
+`TextureView` for the colour attachment (or three, for the MRT
+G-buffer). The render-graph's transient-resource pool does not yet
+hand out resolved views — that resource-allocation pass is a non-
+trivial chunk of the renderer, and unit-testing it without a real
+GPU device is impossible because every test would need a fallback-
+adapter `Device` instance. PR 7 therefore stops at "pipeline lazy-
+init runs"; PR 8 adds the attachment-view plumbing alongside the
+pixel-parity fixtures that exercise it end-to-end.
+
+The shader sources at `crates/engine-render/shaders/*.wgsl` reference
+`@group(N) @binding(M)` annotations that the empty bind-group layouts
+do not declare. The smoke test will reveal whether wgpu accepts this
+discrepancy at pipeline-creation time or rejects it; either outcome
+informs PR 8's scope (real bind-group descriptors are PR 8 work
+regardless; only the failure mode shifts).
+
+### PR 8 — Engine Core v0.3 closure (deferred, runner-gated)
+
+Identical contract to the original "single runner-gated PR" half of
+the prior addenda's deferred list:
+
+1. `tools/upscaler-vendor-sdks/{streamline,fsr,xess}/` —
+   bindgen-generated `*-sys` crates + per-vendor `LICENSE-VENDOR.txt`.
+2. Real provider impls in
+   `crates/engine-upscale-vendor/src/{dlss,fsr,xess}.rs` (flip
+   `supports_stub() -> false` to real `supports(device)` probes).
+3. `crates/engine-render/assets/onnx/temporal_upscaler_v1.onnx` via
+   Git LFS + `.gitattributes`; `OwnedOnnxTemporal::supports()` becomes
+   a runtime ORT probe; ADR-051 entry 4 flips from "anticipated" to
+   "active".
+4. Six pixel-parity fixtures (3 ADR-064 + 3 ADR-065) rendering via
+   both the CPU oracle in `engine-raster` and the GPU path; ADR-046's
+   1/255 channel + p99 ≤ 1% threshold gates each.
+5. Real `begin_render_pass` plumbing in the four render-pass bodies
+   (csm_shadow / gbuffer / lighting + bloom's MRT path) plus real
+   bind-group descriptors against the WGSL `@group/@binding`
+   annotations.
+6. `.github/workflows/ci.yml` `frame_pacing` job promoted from
+   `continue-on-error: true` to required (ADR-047 §7); first green
+   RX 6700 XT baseline at
+   `docs/observatory/phase-6-milestone-baseline.md`.
+7. `engine.toml` `phase = "6"` → `"6-closed"` (mirrors Phase 4's
+   `"4-audited"` precedent); README v0.3 paragraph; this ADR's
+   Status flipped from *Accepted* to *Closed* with the v0.3 tag
+   commit hash.
+
+PR 8's environmental prerequisites are unchanged: self-hosted
+RX 6700 XT runner per `docs/runbooks/frame-pacing-runner.md`, DLSS
+Streamline 2.x + AMD FSR 4 + Intel XeSS 2 SDKs downloaded and
+licensed, `ort` native binaries installable, Git LFS configured.

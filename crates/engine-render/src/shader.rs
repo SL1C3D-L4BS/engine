@@ -35,7 +35,7 @@ use engine_gpu::{
     PipelineLayoutDesc, RenderPipeline, RenderPipelineDesc, ShaderModule, ShaderModuleDesc,
     VertexState,
 };
-use engine_shader::{Artifact, Bundle, Target};
+use engine_shader::{Artifact, Bundle, Stage, Target};
 
 /// Why a shader artefact can't be turned into a GPU pipeline.
 #[derive(Debug)]
@@ -225,6 +225,22 @@ pub fn empty_bind_group_layout(device: &Device, label: &str) -> engine_gpu::Bind
     engine_gpu::BindGroupLayout::new(device, &BindGroupLayoutDesc { label })
 }
 
+/// Wrap a raw WGSL `&str` (e.g. one of the embedded `crate::shaders::*`
+/// constants) into a [`ShaderArtefactSet`] so the `build_*_pipeline`
+/// helpers can consume it without a `slangc` build step.
+///
+/// The hand-written Phase-6 WGSL sources at
+/// `crates/engine-render/shaders/*.wgsl` ship as `pub const &str`
+/// constants embedded via `include_str!`. They never went through
+/// `slangc`, so they don't ride in a multi-target Slang
+/// [`Bundle`]. This helper builds a one-artefact bundle so those
+/// strings flow through the same pipeline-builder API.
+pub fn wgsl_artefact_set(stage: Stage, entry: &str, source: &str) -> ShaderArtefactSet {
+    let artefact = Artifact::new(Target::Wgsl, source.as_bytes().to_vec(), Vec::new());
+    let bundle = Bundle::new(entry, stage, vec![artefact]);
+    ShaderArtefactSet::new(bundle)
+}
+
 fn build_shader_module(
     device: &Device,
     artefacts: &ShaderArtefactSet,
@@ -307,5 +323,25 @@ mod tests {
         let err = ShaderError::TargetNotInBundle(Target::Wgsl);
         let s = err.to_string();
         assert!(s.contains("Wgsl"), "{s}");
+    }
+
+    #[test]
+    fn wgsl_artefact_set_wraps_vertex_source() {
+        let src = "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0); }";
+        let set = wgsl_artefact_set(Stage::Vertex, "vs_main", src);
+        assert_eq!(set.bundle().entry, "vs_main");
+        assert_eq!(set.bundle().stage, Stage::Vertex);
+        let a = set.wgsl().expect("wgsl present");
+        assert_eq!(a.target, Target::Wgsl);
+        assert_eq!(a.bytes, src.as_bytes());
+    }
+
+    #[test]
+    fn wgsl_artefact_set_wraps_compute_source() {
+        let src = "@compute @workgroup_size(1) fn cs_main() {}";
+        let set = wgsl_artefact_set(Stage::Compute, "cs_main", src);
+        assert_eq!(set.bundle().stage, Stage::Compute);
+        let a = set.wgsl().expect("wgsl present");
+        assert!(a.bytes.starts_with(b"@compute"));
     }
 }

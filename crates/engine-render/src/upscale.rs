@@ -320,6 +320,51 @@ impl UpscalerRegistry {
         r
     }
 
+    /// Populate the registry per a parsed `engine.toml [upscaler]`
+    /// block.
+    ///
+    /// `provider = "auto"` walks the full Phase-6 cascade (identical
+    /// to [`UpscalerRegistry::with_phase6_defaults`]). A specific
+    /// provider name registers that provider followed by
+    /// [`OwnedBilinear`] as the universal fallback — so a host whose
+    /// device declines the forced provider still produces a frame
+    /// rather than a hard failure. The `quality` field is recorded
+    /// for the [`UpscaleCtx`] caller; the registry itself does not
+    /// consume it.
+    pub fn with_phase6_defaults_from_config(cfg: &crate::upscaler_config::UpscalerConfig) -> Self {
+        use crate::upscaler_config::Provider;
+        let mut r = Self::new();
+        match cfg.provider {
+            Provider::Auto => {
+                r.register(Box::new(VendorDlss));
+                r.register(Box::new(VendorFsr));
+                r.register(Box::new(VendorXess));
+                r.register(Box::new(OwnedOnnxTemporal));
+                r.register(Box::new(OwnedBilinear));
+            }
+            Provider::Dlss => {
+                r.register(Box::new(VendorDlss));
+                r.register(Box::new(OwnedBilinear));
+            }
+            Provider::Fsr => {
+                r.register(Box::new(VendorFsr));
+                r.register(Box::new(OwnedBilinear));
+            }
+            Provider::Xess => {
+                r.register(Box::new(VendorXess));
+                r.register(Box::new(OwnedBilinear));
+            }
+            Provider::OwnedOnnx => {
+                r.register(Box::new(OwnedOnnxTemporal));
+                r.register(Box::new(OwnedBilinear));
+            }
+            Provider::OwnedBilinear => {
+                r.register(Box::new(OwnedBilinear));
+            }
+        }
+        r
+    }
+
     /// Append a provider to the priority list.
     pub fn register(&mut self, provider: Box<dyn UpscalerProvider>) {
         self.providers.push(provider);
@@ -547,5 +592,49 @@ mod tests {
             r.kinds(),
             vec![UpscalerKind::OwnedBilinear, UpscalerKind::Fsr]
         );
+    }
+
+    #[test]
+    fn registry_from_config_auto_matches_default_cascade() {
+        use crate::upscaler_config::{Provider, Quality, UpscalerConfig};
+        let cfg = UpscalerConfig {
+            provider: Provider::Auto,
+            quality: Quality::Balanced,
+        };
+        let r = UpscalerRegistry::with_phase6_defaults_from_config(&cfg);
+        assert_eq!(r.kinds(), UpscalerRegistry::with_phase6_defaults().kinds());
+    }
+
+    #[test]
+    fn registry_from_config_forces_single_vendor_plus_bilinear() {
+        use crate::upscaler_config::{Provider, Quality, UpscalerConfig};
+        for (forced, expected_first) in [
+            (Provider::Dlss, UpscalerKind::Dlss),
+            (Provider::Fsr, UpscalerKind::Fsr),
+            (Provider::Xess, UpscalerKind::Xess),
+            (Provider::OwnedOnnx, UpscalerKind::OwnedOnnx),
+        ] {
+            let cfg = UpscalerConfig {
+                provider: forced,
+                quality: Quality::Balanced,
+            };
+            let r = UpscalerRegistry::with_phase6_defaults_from_config(&cfg);
+            assert_eq!(
+                r.kinds(),
+                vec![expected_first, UpscalerKind::OwnedBilinear],
+                "forced {forced:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn registry_from_config_forces_bilinear_only() {
+        use crate::upscaler_config::{Provider, Quality, UpscalerConfig};
+        let cfg = UpscalerConfig {
+            provider: Provider::OwnedBilinear,
+            quality: Quality::Performance,
+        };
+        let r = UpscalerRegistry::with_phase6_defaults_from_config(&cfg);
+        assert_eq!(r.kinds(), vec![UpscalerKind::OwnedBilinear]);
     }
 }

@@ -165,10 +165,33 @@ impl ResourceSet {
 pub struct PassContext<'a> {
     /// Frame index — for jitter / TAA history.
     pub frame_idx: u64,
-    /// Backend-opaque scratchpad. PR 2's engine-gpu wrapper will
-    /// extend this with a command buffer ref; the software
-    /// rasterizer uses it for output buffer access.
+    /// Optional GPU command-recording surface. `Some(_)` when the
+    /// graph executes against the `engine-gpu` backend; `None` when
+    /// the CPU rasterizer testbed drives the schedule. PR-7 Phase-6
+    /// passes panic if asked to record without a GPU context.
+    pub gpu: Option<GpuFrameContext<'a>>,
+    /// Backend-opaque scratchpad. The software rasterizer uses
+    /// it for output-buffer access; the GPU backend may stash
+    /// per-frame ECS/world state here.
     pub user: &'a mut dyn core::any::Any,
+}
+
+/// Per-frame GPU command surface handed to `Pass::record` when the
+/// graph executes against the `engine-gpu` backend (ADR-049 boundary).
+///
+/// Holds a shared borrow of the device (for pipeline lazy-init) and
+/// a unique borrow of the encoder (for command recording). The graph
+/// reborrows the encoder for each pass iteration so the same encoder
+/// flows through all scheduled passes in a single frame.
+#[derive(Debug)]
+pub struct GpuFrameContext<'a> {
+    /// Device handle for pipeline / resource construction. The
+    /// reference is shared because passes only read device state
+    /// (limits, features) and call non-mutating constructors.
+    pub device: &'a engine_gpu::Device,
+    /// Command encoder. Passes open `RenderPass` / `ComputePass`
+    /// scopes off this encoder to record their draws / dispatches.
+    pub encoder: &'a mut engine_gpu::CommandEncoder,
 }
 
 /// The trait every named pass implements.
@@ -352,19 +375,33 @@ impl RenderGraph {
     }
 
     /// Execute the compiled schedule against a backend-supplied
-    /// user context. PR 1 keeps the API surface; the rasterizer
-    /// testbed and the future GPU runner both call this.
+    /// user context. PR 1 shipped the no-GPU surface; PR 7 adds the
+    /// optional [`GpuFrameContext`] so Phase-6 passes can record
+    /// against an `engine-gpu` encoder. The rasterizer testbed passes
+    /// `None`; production frame loops pass `Some(_)`.
     pub fn execute(
         &mut self,
         frame_idx: u64,
         user: &mut dyn core::any::Any,
+        mut gpu: Option<GpuFrameContext<'_>>,
     ) -> Result<(), ExecuteError> {
         let Some(schedule) = self.schedule.clone() else {
             return Err(ExecuteError::NotCompiled);
         };
         for idx in schedule {
             let pass = &mut self.passes[idx].pass;
-            let mut ctx = PassContext { frame_idx, user };
+            // Reborrow the GPU context for this iteration so the
+            // encoder mut-borrow can flow through every scheduled
+            // pass in turn.
+            let gpu_iter = gpu.as_mut().map(|g| GpuFrameContext {
+                device: g.device,
+                encoder: &mut *g.encoder,
+            });
+            let mut ctx = PassContext {
+                frame_idx,
+                gpu: gpu_iter,
+                user: &mut *user,
+            };
             pass.record(&mut ctx);
         }
         Ok(())
