@@ -536,3 +536,73 @@ PR 8's environmental prerequisites are unchanged: self-hosted
 RX 6700 XT runner per `docs/runbooks/frame-pacing-runner.md`, DLSS
 Streamline 2.x + AMD FSR 4 + Intel XeSS 2 SDKs downloaded and
 licensed, `ort` native binaries installable, Git LFS configured.
+
+## Addendum (2026-05-27, fourth pass) — Phase 6 PR 7.5 (code-review follow-up)
+
+A 15-finding multi-angle code review against PR 7 surfaced engineering-
+only correctness + cleanup work that did not need the runner / SDKs /
+ONNX model. PR 7.5 closes ten of the findings; five remain PR 8 scope.
+
+### PR 7.5 delivered (10 findings closed)
+
+- **#5 + #2** — `Pass` trait gained `install_pipeline(&mut self,
+  &Device) -> Result<(), ShaderError>`; `RenderGraph::install_pipelines`
+  walks the registered passes and threads the device through. Per-pass
+  `OnceLock<Pipeline>` fields became `Option<Pipeline>` and the
+  `record()` bodies short-circuit with `let-else` when either
+  `ctx.gpu` or `self.pipeline` is `None`. The per-frame `.expect()`
+  panic risk and the "panic on CPU path" regression both go away.
+- **#11** — Dropped the per-frame `.clone()` on the seven cloning
+  compute passes (CullPass, ClusterLightPass, SsaoPass, IblPass,
+  TaaPass, BloomPass, TonemapPass). `ComputePass::set_pipeline` takes
+  `&ComputePipeline`; the `&` from `self.pipeline.as_ref()` flows
+  straight through.
+- **#10** — `GBufferPass` pipeline label `\"gbuffer\"` →
+  `\"draw.opaque\"` (matches `pass.name()`); `BloomPass` outer
+  compute scope label uses `self.name()` (== `\"post.fx.bloom\"`) so
+  trace-correlation tooling joins on identical strings. Internal bloom
+  pipeline labels keep their `.extract` / `.downsample` / `.upsample`
+  suffixes (three pipelines under one pass need disambiguation).
+- **#6 + #7 + #8** — `upscaler_config::strip_comment` became
+  quote-aware (preserves `#` inside `\"…\"` / `'…'`); `unquote` returns
+  `Result<&str, ParseError>` with a new `UnbalancedQuote { value }`
+  variant; section detection trims inside the brackets so
+  `[upscaler]`, `[ upscaler ]`, `[  upscaler  ]` all parse identically.
+- **#9** — `UpscaleCtx` gained `quality: Quality`;
+  `impl Quality::scale() -> f32` returns the documented divisors
+  (50% / 67% / 75% / 100%). The `~66%` rustdoc on `Quality::Balanced`
+  was corrected to `67%` (matching `engine.toml:115`).
+- **#13** — `with_phase6_defaults` delegates to
+  `with_phase6_defaults_from_config(&UpscalerConfig::default())` so
+  the ADR-066 cascade order lives in one place. The `Auto` arm of the
+  config-driven function is the single source of truth.
+- **#1** — `tests/pipeline_smoke.rs` `Device::new(_, false)` (was
+  `true` — that flag is wgpu's `force_fallback_adapter`, not a graceful
+  fallback). Also wires the new `Result<_, (pass_name, ShaderError)>`
+  return so a failing pass is reported by name. A doc warning on
+  `engine-gpu::Device::new` flags the misleading parameter name.
+
+Tests: 610 → 615 (+5: 3 parser + 2 quality). `just ci` green (build +
+test + clippy `-D warnings` + fmt-check + cargo-deny).
+
+### Findings deferred to PR 8
+
+- **#3** — empty `bind_group_layouts: &[]` vs WGSL `@group/@binding`
+  declarations. Wiring real bind-group descriptors is PR 8's vendor /
+  bind-group / WGSL contract work.
+- **#4** — empty `vertex_buffers: &[]` for `csm_shadow` + `gbuffer`
+  vs shader `@location(N)` inputs. Real vertex layouts ride on the
+  mesh format work in PR 8.
+- **#12** — smoke test `#[ignore]` + no wgpu backend feature in the
+  workspace dev-deps. Enabling `wgpu/vulkan` in `engine-render`'s
+  `[dev-dependencies]` is supply-chain-impacting; PR 8 wires the
+  runner workflow to pass `--ignored` against a real adapter.
+
+### Findings filed for later
+
+- **#14** — `RenderGraph::execute` has zero external callers today.
+  PR 8's first frame loop is the natural integration site.
+- **#15** — `strip_comment` / `unquote` duplicate
+  `bin/engine-bench-frame-pacing/src/budgets.rs` and
+  `crates/engine-script/src/breakpoints_toml.rs`. Lifting a shared
+  `engine-config` micro-crate is a separate cleanup PR.

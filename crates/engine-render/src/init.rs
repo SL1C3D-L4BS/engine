@@ -22,7 +22,9 @@ use engine_gpu::{ComputePipeline, Device, RenderPipeline};
 use engine_shader::Stage;
 
 use crate::passes;
-use crate::shader::{ComputePipelineHelperDesc, build_compute_pipeline, wgsl_artefact_set};
+use crate::shader::{
+    ComputePipelineHelperDesc, ShaderError, build_compute_pipeline, wgsl_artefact_set,
+};
 use crate::shaders::BRDF_LUT_BAKE_WGSL;
 
 /// Build the BRDF LUT bake compute pipeline.
@@ -34,7 +36,7 @@ use crate::shaders::BRDF_LUT_BAKE_WGSL;
 /// pipeline once at startup; the output is a 512² Rgba16Float
 /// [`crate::resources::BrdfLut`] texture sampled by every IBL
 /// evaluation thereafter.
-pub fn build_brdf_lut_bake_pipeline(device: &Device) -> ComputePipeline {
+pub fn build_brdf_lut_bake_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", BRDF_LUT_BAKE_WGSL);
     build_compute_pipeline(
         device,
@@ -44,7 +46,6 @@ pub fn build_brdf_lut_bake_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("brdf_lut_bake pipeline build")
 }
 
 /// Bundle of every pipeline the Phase-6 Track-A graph constructs.
@@ -52,9 +53,7 @@ pub fn build_brdf_lut_bake_pipeline(device: &Device) -> ComputePipeline {
 /// Owned by [`build_all_phase6_pipelines`] which returns this struct
 /// after exercising the full assembly path. The smoke test asserts
 /// every member compiled; the PR-8 runner-validated parity fixtures
-/// will reuse the bundle to pre-warm the graph's [`OnceLock`]s.
-///
-/// [`OnceLock`]: std::sync::OnceLock
+/// will reuse the bundle to pre-warm the graph's pass-owned pipelines.
 #[derive(Clone, Debug)]
 pub struct Phase6Pipelines {
     /// Compute: front-end frustum cull.
@@ -88,23 +87,32 @@ pub struct Phase6Pipelines {
 /// Build every Phase-6 GPU pipeline against a freshly-initialised
 /// [`Device`]. Smoke-tested as a single end-to-end assembly.
 ///
-/// Panics on any failure — the helper exists to make pipeline-build
-/// regressions impossible to miss during PR 7's smoke validation and
-/// during PR 8's parity-fixture setup.
-pub fn build_all_phase6_pipelines(device: &Device) -> Phase6Pipelines {
-    Phase6Pipelines {
-        cull: passes::build_cull_pipeline(device),
-        csm_shadow: passes::build_csm_shadow_pipeline(device),
-        cluster_assign: passes::build_cluster_assign_pipeline(device),
-        gbuffer: passes::build_gbuffer_pipeline(device),
-        ssao: passes::build_ssao_pipeline(device),
-        ibl_evaluate: passes::build_ibl_evaluate_pipeline(device),
-        lighting: passes::build_lighting_pipeline(device),
-        taa_resolve: passes::build_taa_resolve_pipeline(device),
-        bloom_extract: passes::build_bloom_extract_pipeline(device),
-        bloom_downsample: passes::build_bloom_downsample_pipeline(device),
-        bloom_upsample: passes::build_bloom_upsample_pipeline(device),
-        tonemap: passes::build_tonemap_pipeline(device),
-        brdf_lut_bake: build_brdf_lut_bake_pipeline(device),
-    }
+/// Returns `Err((pass_name, ShaderError))` on the first failure; the
+/// remaining pipelines are not exercised. The named pass labels the
+/// failure for the smoke test report and for PR 8's parity-fixture
+/// setup.
+pub fn build_all_phase6_pipelines(
+    device: &Device,
+) -> Result<Phase6Pipelines, (&'static str, ShaderError)> {
+    Ok(Phase6Pipelines {
+        cull: passes::build_cull_pipeline(device).map_err(|e| ("cull", e))?,
+        csm_shadow: passes::build_csm_shadow_pipeline(device).map_err(|e| ("shadow", e))?,
+        cluster_assign: passes::build_cluster_assign_pipeline(device)
+            .map_err(|e| ("light.cluster", e))?,
+        gbuffer: passes::build_gbuffer_pipeline(device).map_err(|e| ("draw.opaque", e))?,
+        ssao: passes::build_ssao_pipeline(device).map_err(|e| ("post.fx.ssao", e))?,
+        ibl_evaluate: passes::build_ibl_evaluate_pipeline(device)
+            .map_err(|e| ("draw.opaque.ibl", e))?,
+        lighting: passes::build_lighting_pipeline(device).map_err(|e| ("draw.opaque.2", e))?,
+        taa_resolve: passes::build_taa_resolve_pipeline(device).map_err(|e| ("post.fx.taa", e))?,
+        bloom_extract: passes::build_bloom_extract_pipeline(device)
+            .map_err(|e| ("post.fx.bloom.extract", e))?,
+        bloom_downsample: passes::build_bloom_downsample_pipeline(device)
+            .map_err(|e| ("post.fx.bloom.downsample", e))?,
+        bloom_upsample: passes::build_bloom_upsample_pipeline(device)
+            .map_err(|e| ("post.fx.bloom.upsample", e))?,
+        tonemap: passes::build_tonemap_pipeline(device).map_err(|e| ("post.fx.tonemap", e))?,
+        brdf_lut_bake: build_brdf_lut_bake_pipeline(device)
+            .map_err(|e| ("init.brdf_lut_bake", e))?,
+    })
 }

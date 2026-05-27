@@ -63,7 +63,7 @@ impl Default for Provider {
 pub enum Quality {
     /// 50% internal scale (highest performance, lowest quality).
     Performance,
-    /// ~66% internal scale.
+    /// 67% internal scale (matches the `engine.toml [upscaler]` schema).
     Balanced,
     /// 75% internal scale.
     Quality,
@@ -74,6 +74,18 @@ pub enum Quality {
 impl Quality {
     /// Default per ADR-005 §3.
     pub const DEFAULT: Self = Self::Balanced;
+
+    /// Internal-resolution divisor: `floor(display_extent * scale())`
+    /// produces the upscaler's input extent for this quality preset.
+    /// Values match the documented `engine.toml [upscaler]` schema.
+    pub fn scale(self) -> f32 {
+        match self {
+            Quality::Performance => 0.50,
+            Quality::Balanced => 0.67,
+            Quality::Quality => 0.75,
+            Quality::UltraQuality => 1.00,
+        }
+    }
 }
 
 impl Default for Quality {
@@ -98,6 +110,14 @@ pub enum ParseError {
     UnknownProvider(String),
     /// `quality = "..."` value was not one of the documented variants.
     UnknownQuality(String),
+    /// A quoted value was missing its closing quote (e.g. `provider = "dlss`).
+    /// The schema specifies quoted strings; an unbalanced quote is a hard
+    /// parse error rather than a silent pass-through that produces a
+    /// confusing UnknownProvider/UnknownQuality with a stray leading `"`.
+    UnbalancedQuote {
+        /// The malformed value verbatim.
+        value: String,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -108,6 +128,9 @@ impl fmt::Display for ParseError {
             }
             ParseError::UnknownQuality(s) => {
                 write!(f, "unknown upscaler quality {s:?}")
+            }
+            ParseError::UnbalancedQuote { value } => {
+                write!(f, "unbalanced quote in value {value:?}")
             }
         }
     }
@@ -137,7 +160,10 @@ pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            in_section = line == "[upscaler]";
+            // Trim inside the brackets so `[upscaler]`, `[ upscaler ]`,
+            // and `[  upscaler  ]` are all treated as the same section.
+            let inner = &line[1..line.len() - 1];
+            in_section = inner.trim() == "upscaler";
             continue;
         }
         if !in_section {
@@ -148,7 +174,7 @@ pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
         };
         let key = key.trim();
         let value = strip_comment(value).trim();
-        let value = unquote(value);
+        let value = unquote(value)?;
         match key {
             "provider" => {
                 config.provider = match value {
@@ -176,26 +202,60 @@ pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
     Ok(config)
 }
 
+/// Truncate `line` at the first `#` that lies outside a quoted string,
+/// preserving `#` characters inside `"..."` or `'...'` values. The
+/// minimal TOML schema does not allow escape sequences, so toggling on
+/// the matching quote byte is sufficient.
 fn strip_comment(line: &str) -> &str {
-    match line.find('#') {
-        Some(i) => &line[..i],
-        None => line,
+    let bytes = line.as_bytes();
+    let mut in_quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match in_quote {
+            None => {
+                if b == b'#' {
+                    return &line[..i];
+                }
+                if b == b'"' || b == b'\'' {
+                    in_quote = Some(b);
+                }
+            }
+            Some(q) if b == q => {
+                in_quote = None;
+            }
+            Some(_) => {}
+        }
+        i += 1;
     }
+    line
 }
 
-/// Strip surrounding double or single quotes if present. The schema
-/// quotes string values but the reader is lenient for one-off
-/// hand-edited manifests.
-fn unquote(s: &str) -> &str {
+/// Strip surrounding double or single quotes if present.
+///
+/// The schema quotes string values; the reader is lenient for
+/// hand-edited manifests that omit the quotes entirely (`provider =
+/// dlss`). An *unbalanced* leading quote (e.g. `"dlss`) is a hard
+/// parse error rather than a silent pass-through, since the latter
+/// surfaces later as a confusing `UnknownProvider("\"dlss")`.
+fn unquote(s: &str) -> Result<&str, ParseError> {
     let bytes = s.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        &s[1..s.len() - 1]
-    } else {
-        s
+    let len = bytes.len();
+    if len == 0 {
+        return Ok(s);
     }
+    let first = bytes[0];
+    if first != b'"' && first != b'\'' {
+        // Unquoted value — accept verbatim.
+        return Ok(s);
+    }
+    let last = bytes[len - 1];
+    if len >= 2 && first == last {
+        return Ok(&s[1..len - 1]);
+    }
+    Err(ParseError::UnbalancedQuote {
+        value: s.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -284,6 +344,41 @@ quality  = quality   # 75% scale
         let cfg = parse(src).expect("parses");
         assert_eq!(cfg.provider, Provider::Dlss);
         assert_eq!(cfg.quality, Quality::Quality);
+    }
+
+    #[test]
+    fn strip_comment_respects_quoted_hash() {
+        // `#` inside a quoted value must not be treated as a comment
+        // start. The value "with#hash" round-trips through strip_comment
+        // and unquote; the parser then rejects it as an unknown provider
+        // (which proves the `#` was preserved through the read).
+        let src = "[upscaler]\nprovider = \"with#hash\"\n";
+        let err = parse(src).expect_err("not a real provider");
+        assert!(
+            matches!(err, ParseError::UnknownProvider(ref s) if s == "with#hash"),
+            "expected UnknownProvider(\"with#hash\"), got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unbalanced_quote() {
+        // Missing closing quote — the schema mandates quoted values, so
+        // this is a hard parse error rather than a silent pass-through.
+        let src = "[upscaler]\nprovider = \"dlss\n";
+        let err = parse(src).expect_err("should reject");
+        assert!(
+            matches!(err, ParseError::UnbalancedQuote { ref value } if value == "\"dlss"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parse_section_header_tolerates_internal_whitespace() {
+        // Idiomatic TOML accepts whitespace inside the brackets. The
+        // parser should treat `[ upscaler ]` and `[upscaler]` identically.
+        let src = "[ upscaler ]\nprovider = \"dlss\"\n";
+        let cfg = parse(src).expect("parses");
+        assert_eq!(cfg.provider, Provider::Dlss);
     }
 
     #[test]

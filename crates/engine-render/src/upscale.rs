@@ -77,6 +77,14 @@ pub struct UpscaleCtx<'a> {
     pub input_extent: [u32; 2],
     /// Final display resolution (the output).
     pub output_extent: [u32; 2],
+    /// Operator-selected quality preset (from `engine.toml [upscaler]`
+    /// via [`crate::upscaler_config::UpscalerConfig::quality`]). Provider
+    /// implementations consult this when the input extent doesn't pin
+    /// the scale — e.g. the [`OwnedBilinear`] placeholder derives its
+    /// effective internal resolution from
+    /// `output_extent * quality.scale()` so a missing input_extent
+    /// still produces the documented divisor.
+    pub quality: crate::upscaler_config::Quality,
     /// Backend-opaque scratchpad. The CPU oracle uses
     /// `&mut UpscaleCpuBuffers`; the GPU runner will use a struct
     /// carrying a [`engine_gpu::CommandEncoder`] handle + bindless ids.
@@ -310,27 +318,27 @@ impl UpscalerRegistry {
     /// through to `OwnedBilinear` on every host — same as the
     /// Phase-5 default, but with the ONNX provider reserved in the
     /// cascade so a future SDK-bringing PR is a binding swap only.
+    ///
+    /// Equivalent to
+    /// `with_phase6_defaults_from_config(&UpscalerConfig::default())`;
+    /// the cascade order lives in a single place (the `Auto` arm of
+    /// `with_phase6_defaults_from_config`) so future ADR-066 revisions
+    /// touch one site.
     pub fn with_phase6_defaults() -> Self {
-        let mut r = Self::new();
-        r.register(Box::new(VendorDlss));
-        r.register(Box::new(VendorFsr));
-        r.register(Box::new(VendorXess));
-        r.register(Box::new(OwnedOnnxTemporal));
-        r.register(Box::new(OwnedBilinear));
-        r
+        Self::with_phase6_defaults_from_config(&crate::upscaler_config::UpscalerConfig::default())
     }
 
     /// Populate the registry per a parsed `engine.toml [upscaler]`
     /// block.
     ///
-    /// `provider = "auto"` walks the full Phase-6 cascade (identical
-    /// to [`UpscalerRegistry::with_phase6_defaults`]). A specific
+    /// `provider = "auto"` walks the full Phase-6 cascade. A specific
     /// provider name registers that provider followed by
     /// [`OwnedBilinear`] as the universal fallback — so a host whose
     /// device declines the forced provider still produces a frame
-    /// rather than a hard failure. The `quality` field is recorded
-    /// for the [`UpscaleCtx`] caller; the registry itself does not
-    /// consume it.
+    /// rather than a hard failure. The `OwnedBilinear` arm registers a
+    /// single entry (the bilinear is itself the universal fallback).
+    /// `cfg.quality` flows through to [`UpscaleCtx::quality`] at the
+    /// renderer's per-frame setup; the registry does not consume it.
     pub fn with_phase6_defaults_from_config(cfg: &crate::upscaler_config::UpscalerConfig) -> Self {
         use crate::upscaler_config::Provider;
         let mut r = Self::new();
@@ -473,6 +481,7 @@ mod tests {
             jitter: [0.0, 0.0],
             input_extent: [1280, 720],
             output_extent: [2560, 1440],
+            quality: crate::upscaler_config::Quality::default(),
             user: &mut scratch,
         };
         assert_eq!(
@@ -494,11 +503,39 @@ mod tests {
             jitter: [0.125, -0.375],
             input_extent: [1280, 720],
             output_extent: [2560, 1440],
+            quality: crate::upscaler_config::Quality::default(),
             user: &mut scratch,
         };
         let r = OwnedBilinear.upscale(&mut ctx).expect("bilinear succeeds");
         assert_eq!(r.kind, UpscalerKind::OwnedBilinear);
         assert_eq!(r.output_extent, [2560, 1440]);
+    }
+
+    #[test]
+    fn quality_scale_matches_documented_divisors() {
+        use crate::upscaler_config::Quality;
+        // The four ratios match the engine.toml [upscaler] schema:
+        // performance 50%, balanced 67%, quality 75%, ultra-quality 100%.
+        assert_eq!(Quality::Performance.scale(), 0.50);
+        assert_eq!(Quality::Balanced.scale(), 0.67);
+        assert_eq!(Quality::Quality.scale(), 0.75);
+        assert_eq!(Quality::UltraQuality.scale(), 1.00);
+    }
+
+    #[test]
+    fn ctx_quality_threads_operator_preset_through_upscale() {
+        // The renderer fills ctx.quality from UpscalerConfig.quality so
+        // providers can choose their internal-resolution divisor.
+        let mut scratch: u32 = 0;
+        let ctx = UpscaleCtx {
+            frame_idx: 0,
+            jitter: [0.0, 0.0],
+            input_extent: [1280, 720],
+            output_extent: [2560, 1440],
+            quality: crate::upscaler_config::Quality::Performance,
+            user: &mut scratch,
+        };
+        assert_eq!(ctx.quality.scale(), 0.50);
     }
 
     #[test]
@@ -545,6 +582,7 @@ mod tests {
             jitter: [0.0, 0.0],
             input_extent: [1280, 720],
             output_extent: [2560, 1440],
+            quality: crate::upscaler_config::Quality::default(),
             user: &mut scratch,
         };
         assert_eq!(

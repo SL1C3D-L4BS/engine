@@ -352,6 +352,32 @@ not need vendor SDKs, an ONNX model, or a GPU runner:
 Tests: 596 → 610. `just ci` green. ADR-049 wgpu boundary
 preserved.
 
+**PR 7.5 — code-review follow-up (engineering-only, landed
+2026-05-27).** Closed 10 of the 15 findings surfaced by a multi-angle
+code review against PR 7. The `Pass` trait gained
+`install_pipeline(device)` so pipeline-build failures surface at
+startup with `Result<(), ShaderError>` instead of panicking on the
+per-frame hot path; per-pass `OnceLock` storage became `Option`;
+`record()` bodies short-circuit on `gpu = None` or "pipeline not
+installed", restoring the CPU-rasterizer no-op path. Per-frame
+`.clone()` on `Arc`-wrapped pipelines removed. `GBufferPass` and
+`BloomPass` outer labels aligned with `pass.name()`. The TOML reader
+in `upscaler_config.rs` became quote-aware (preserves `#` inside
+strings), rejects unbalanced quotes via a new `ParseError` variant,
+and tolerates `[ upscaler ]` whitespace. `UpscaleCtx` gained
+`quality: Quality` + a `Quality::scale() -> f32` divisor helper.
+`with_phase6_defaults` delegates to `…_from_config(&Default::default())`
+so the ADR-066 cascade order has one source of truth. The smoke test
+no longer forces a fallback adapter (the `Device::new(_, true)` flag
+is wgpu's `force_fallback_adapter`, not graceful fallback) and now
+surfaces the failing pass name. Tests: 610 → 615 (+5). `just ci`
+green.
+
+The five remaining findings fold into PR 8 (real bind-group layouts,
+real vertex-buffer layouts, smoke-test backend feature, frame-pacing
+gate promotion) or follow-up cleanup (shared `engine-config` crate for
+the TOML helpers duplicated across three sites).
+
 **PR 8 — Engine Core v0.3 closure (deferred, runner-gated).** The
 remaining work folds into a single PR that needs environmental
 prerequisites (RX 6700 XT runner + downloaded DLSS/FSR/XeSS SDKs +

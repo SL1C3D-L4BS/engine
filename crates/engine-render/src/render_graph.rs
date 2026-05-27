@@ -31,6 +31,8 @@
 
 use core::marker::PhantomData;
 
+use crate::shader::ShaderError;
+
 /// Which rendering track a pass belongs to. ADR-004 names the
 /// tracks; this enum is their runtime representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,8 +169,9 @@ pub struct PassContext<'a> {
     pub frame_idx: u64,
     /// Optional GPU command-recording surface. `Some(_)` when the
     /// graph executes against the `engine-gpu` backend; `None` when
-    /// the CPU rasterizer testbed drives the schedule. PR-7 Phase-6
-    /// passes panic if asked to record without a GPU context.
+    /// the CPU rasterizer testbed (or any non-GPU consumer) drives the
+    /// schedule. Phase-6 GPU passes short-circuit when this is `None`,
+    /// matching their PR-1-era no-op record behaviour.
     pub gpu: Option<GpuFrameContext<'a>>,
     /// Backend-opaque scratchpad. The software rasterizer uses
     /// it for output-buffer access; the GPU backend may stash
@@ -224,6 +227,18 @@ pub trait Pass: Send {
     /// resource declared via `reads`/`writes` is allocated and
     /// barrier-ready.
     fn record(&mut self, ctx: &mut PassContext);
+
+    /// Eagerly build any GPU pipeline this pass owns against
+    /// `device`. Called once per device session by
+    /// [`RenderGraph::install_pipelines`] before the first
+    /// [`RenderGraph::execute`]. The default impl is a no-op so passes
+    /// without a pipeline (CPU-only passes; the upscale-pass adapter)
+    /// cost nothing; Phase-6 passes override to surface
+    /// [`ShaderError`] at startup instead of panicking on the per-frame
+    /// hot path.
+    fn install_pipeline(&mut self, _device: &engine_gpu::Device) -> Result<(), ShaderError> {
+        Ok(())
+    }
 }
 
 /// The graph itself. Holds the registered pass list, the
@@ -410,6 +425,32 @@ impl RenderGraph {
     /// Number of registered passes (regardless of track filter).
     pub fn pass_count(&self) -> usize {
         self.passes.len()
+    }
+
+    /// Build every registered pass's GPU pipeline against `device`.
+    ///
+    /// Each pass's [`Pass::install_pipeline`] runs in registration
+    /// order; the first failure short-circuits and the returned tuple
+    /// names the failing pass via its [`Pass::name`]. Passes that own
+    /// no pipeline (the default impl) are no-ops and never fail.
+    ///
+    /// Production frame loops call this once at renderer startup,
+    /// directly after building the graph and before the first
+    /// [`RenderGraph::execute`]. CPU-only consumers (the rasterizer
+    /// testbed, scheduling unit tests) can skip the call entirely —
+    /// `Pass::record` short-circuits gracefully when no pipeline has
+    /// been installed.
+    pub fn install_pipelines(
+        &mut self,
+        device: &engine_gpu::Device,
+    ) -> Result<(), (&'static str, ShaderError)> {
+        for entry in &mut self.passes {
+            entry
+                .pass
+                .install_pipeline(device)
+                .map_err(|e| (entry.pass.name(), e))?;
+        }
+        Ok(())
     }
 }
 

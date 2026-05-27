@@ -1,10 +1,12 @@
-//! Phase 5 PR 3 + PR 4 + PR 7 — ten deferred render-graph passes.
+//! Phase 5 PR 3 + PR 4 + PR 7 + PR 7.5 — ten deferred render-graph passes.
 //!
 //! All implementations name [`engine_gpu`] types; none names `wgpu`
-//! directly (ADR-049). Each pass owns a lazily-built pipeline that
-//! the GPU-side `record()` body binds; PR 7 lands the construction
-//! surface so PR 8 can populate resource bindings + pixel-parity
-//! fixtures without further pass-struct churn.
+//! directly (ADR-049). Each pass owns a GPU pipeline built once via
+//! [`Pass::install_pipeline`] (called by
+//! [`crate::render_graph::RenderGraph::install_pipelines`] at renderer
+//! startup); the `record()` body binds it. PR 7 introduced the
+//! construction surface; PR 7.5 lifted the per-frame `.expect()`
+//! panic risk by moving the build to eager startup.
 //!
 //! Pass scheduling order produced by `RenderGraph::compile()`:
 //!
@@ -30,23 +32,22 @@
 //! is a graph-builder decision; both variants compile and execute
 //! through the same [`RenderGraph`] API.
 //!
-//! ## PR 7 wiring scope
+//! ## PR 7.5 wiring scope
 //!
-//! Each pass owns a [`std::sync::OnceLock`] holding the compiled
-//! pipeline; the first `record()` call against a real
-//! [`crate::render_graph::GpuFrameContext`] lazy-builds the pipeline
-//! from the embedded WGSL constants in [`crate::shaders`] via
-//! [`crate::shader::wgsl_artefact_set`]. Compute passes also issue
-//! their compute-pass scope (begin → set_pipeline → dispatch) with
+//! Each pass owns a `pipeline: Option<{Render,Compute}Pipeline>` slot
+//! that [`Pass::install_pipeline`] fills at startup from the embedded
+//! WGSL constants in [`crate::shaders`] via
+//! [`crate::shader::wgsl_artefact_set`]. The `record()` body
+//! short-circuits if either (a) no GPU command surface is bound
+//! (`ctx.gpu == None` — the CPU-rasterizer testbed path) or (b) no
+//! pipeline has been installed (graphs built for scheduling tests).
+//! Compute-pass scopes (begin → set_pipeline → dispatch) issue
 //! placeholder dispatch dimensions; PR 8 wires real resource lookups +
-//! bind groups + dispatch counts. Render passes (depth-only,
-//! MRT G-buffer, full-screen lighting) lazy-init the pipeline but
-//! defer `begin_render_pass` to PR 8 because the current
-//! [`engine_gpu`] surface requires attachment [`engine_gpu::TextureView`]s
-//! that the render graph's transient resource pool doesn't yet
-//! resolve.
-
-use std::sync::OnceLock;
+//! bind groups + dispatch counts. Render passes (depth-only, MRT
+//! G-buffer, full-screen lighting) defer `begin_render_pass` to PR 8
+//! because the current [`engine_gpu`] surface requires attachment
+//! [`engine_gpu::TextureView`]s that the render graph's transient
+//! resource pool doesn't yet resolve.
 
 use engine_gpu::{ColorTargetState, ComputePipeline, DepthStencilState, Device, RenderPipeline};
 use engine_shader::Stage;
@@ -57,7 +58,7 @@ use crate::contracts::{
 };
 use crate::render_graph::{Pass, PassContext, ResourceId, ResourceSet, Track};
 use crate::shader::{
-    ComputePipelineHelperDesc, RenderPipelineHelperDesc, build_compute_pipeline,
+    ComputePipelineHelperDesc, RenderPipelineHelperDesc, ShaderError, build_compute_pipeline,
     build_render_pipeline, wgsl_artefact_set,
 };
 use crate::shaders::{
@@ -69,7 +70,7 @@ use crate::shaders::{
 // Pipeline-builder helpers (one per pass / per entry point).
 // =============================================================================
 
-pub(crate) fn build_cull_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_cull_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", CULL_WGSL);
     build_compute_pipeline(
         device,
@@ -79,10 +80,9 @@ pub(crate) fn build_cull_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("cull pipeline build")
 }
 
-pub(crate) fn build_csm_shadow_pipeline(device: &Device) -> RenderPipeline {
+pub(crate) fn build_csm_shadow_pipeline(device: &Device) -> Result<RenderPipeline, ShaderError> {
     let vs = wgsl_artefact_set(Stage::Vertex, "vs_main", CSM_SHADOW_WGSL);
     build_render_pipeline(
         device,
@@ -100,10 +100,11 @@ pub(crate) fn build_csm_shadow_pipeline(device: &Device) -> RenderPipeline {
             }),
         },
     )
-    .expect("csm_shadow pipeline build")
 }
 
-pub(crate) fn build_cluster_assign_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_cluster_assign_pipeline(
+    device: &Device,
+) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", CLUSTER_ASSIGN_WGSL);
     build_compute_pipeline(
         device,
@@ -113,16 +114,18 @@ pub(crate) fn build_cluster_assign_pipeline(device: &Device) -> ComputePipeline 
             entry: "cs_main",
         },
     )
-    .expect("cluster_assign pipeline build")
 }
 
-pub(crate) fn build_gbuffer_pipeline(device: &Device) -> RenderPipeline {
+pub(crate) fn build_gbuffer_pipeline(device: &Device) -> Result<RenderPipeline, ShaderError> {
     let vs = wgsl_artefact_set(Stage::Vertex, "vs_main", GBUFFER_WGSL);
     let fs = wgsl_artefact_set(Stage::Fragment, "fs_main", GBUFFER_WGSL);
     build_render_pipeline(
         device,
         &RenderPipelineHelperDesc {
-            label: "gbuffer",
+            // Label matches `GBufferPass::name()` so trace-correlation
+            // tooling joining on schedule names against encoder labels
+            // sees identical strings.
+            label: "draw.opaque",
             vertex: &vs,
             vertex_entry: "vs_main",
             vertex_buffers: &[],
@@ -145,10 +148,9 @@ pub(crate) fn build_gbuffer_pipeline(device: &Device) -> RenderPipeline {
             }),
         },
     )
-    .expect("gbuffer pipeline build")
 }
 
-pub(crate) fn build_ssao_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_ssao_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", SSAO_WGSL);
     build_compute_pipeline(
         device,
@@ -158,10 +160,9 @@ pub(crate) fn build_ssao_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("ssao pipeline build")
 }
 
-pub(crate) fn build_ibl_evaluate_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_ibl_evaluate_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", IBL_EVALUATE_WGSL);
     build_compute_pipeline(
         device,
@@ -171,10 +172,9 @@ pub(crate) fn build_ibl_evaluate_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("ibl_evaluate pipeline build")
 }
 
-pub(crate) fn build_lighting_pipeline(device: &Device) -> RenderPipeline {
+pub(crate) fn build_lighting_pipeline(device: &Device) -> Result<RenderPipeline, ShaderError> {
     let vs = wgsl_artefact_set(Stage::Vertex, "vs_main", LIGHTING_WGSL);
     let fs = wgsl_artefact_set(Stage::Fragment, "fs_main", LIGHTING_WGSL);
     build_render_pipeline(
@@ -192,10 +192,9 @@ pub(crate) fn build_lighting_pipeline(device: &Device) -> RenderPipeline {
             depth_stencil: None,
         },
     )
-    .expect("lighting pipeline build")
 }
 
-pub(crate) fn build_taa_resolve_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_taa_resolve_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", TAA_RESOLVE_WGSL);
     build_compute_pipeline(
         device,
@@ -205,10 +204,11 @@ pub(crate) fn build_taa_resolve_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("taa_resolve pipeline build")
 }
 
-pub(crate) fn build_bloom_extract_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_bloom_extract_pipeline(
+    device: &Device,
+) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_extract", BLOOM_WGSL);
     build_compute_pipeline(
         device,
@@ -218,10 +218,11 @@ pub(crate) fn build_bloom_extract_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_extract",
         },
     )
-    .expect("bloom extract pipeline build")
 }
 
-pub(crate) fn build_bloom_downsample_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_bloom_downsample_pipeline(
+    device: &Device,
+) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_downsample", BLOOM_WGSL);
     build_compute_pipeline(
         device,
@@ -231,10 +232,11 @@ pub(crate) fn build_bloom_downsample_pipeline(device: &Device) -> ComputePipelin
             entry: "cs_downsample",
         },
     )
-    .expect("bloom downsample pipeline build")
 }
 
-pub(crate) fn build_bloom_upsample_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_bloom_upsample_pipeline(
+    device: &Device,
+) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_upsample", BLOOM_WGSL);
     build_compute_pipeline(
         device,
@@ -244,10 +246,9 @@ pub(crate) fn build_bloom_upsample_pipeline(device: &Device) -> ComputePipeline 
             entry: "cs_upsample",
         },
     )
-    .expect("bloom upsample pipeline build")
 }
 
-pub(crate) fn build_tonemap_pipeline(device: &Device) -> ComputePipeline {
+pub(crate) fn build_tonemap_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
     let cs = wgsl_artefact_set(Stage::Compute, "cs_main", TONEMAP_WGSL);
     build_compute_pipeline(
         device,
@@ -257,7 +258,6 @@ pub(crate) fn build_tonemap_pipeline(device: &Device) -> ComputePipeline {
             entry: "cs_main",
         },
     )
-    .expect("tonemap pipeline build")
 }
 
 // =============================================================================
@@ -272,7 +272,7 @@ pub struct CullPass {
     pub render_queue: ResourceId,
     /// Graph handle for the output indirect-draw buffer.
     pub indirect_draws: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl CullPass {
@@ -281,7 +281,7 @@ impl CullPass {
         Self {
             render_queue,
             indirect_draws,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -299,17 +299,19 @@ impl Pass for CullPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.indirect_draws);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_cull_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("CullPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_cull_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("cull");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch — PR 8 wires the instance count
         // from the RenderQueue resource and divides by
         // `contracts::CULL_WORKGROUP_SIZE[0]`.
@@ -329,7 +331,7 @@ pub struct CsmShadowPass {
     pub shadow_casters: ResourceId,
     /// 4096² D32F shadow atlas.
     pub shadow_atlas: ResourceId,
-    pipeline: OnceLock<RenderPipeline>,
+    pipeline: Option<RenderPipeline>,
 }
 
 impl CsmShadowPass {
@@ -338,7 +340,7 @@ impl CsmShadowPass {
         Self {
             shadow_casters,
             shadow_atlas,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -356,18 +358,15 @@ impl Pass for CsmShadowPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.shadow_atlas);
     }
-    fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("CsmShadowPass.record requires a GpuFrameContext");
-        // Lazy-init the depth-only pipeline. PR 8 wires
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_csm_shadow_pipeline(device)?);
+        Ok(())
+    }
+    fn record(&mut self, _ctx: &mut PassContext) {
+        // PR 7.5: the pipeline is installed once at startup. PR 8 wires
         // `begin_render_pass` against each cascade's atlas quadrant
         // (4 sub-passes per ADR-040 §3 reverse-Z) plus shadow-caster
         // draws.
-        let _ = self
-            .pipeline
-            .get_or_init(|| build_csm_shadow_pipeline(gpu.device));
     }
 }
 
@@ -383,7 +382,7 @@ pub struct ClusterLightPass {
     pub lights: ResourceId,
     /// Cluster-cell SSBO (output).
     pub cluster_cells: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl ClusterLightPass {
@@ -392,7 +391,7 @@ impl ClusterLightPass {
         Self {
             lights,
             cluster_cells,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -410,17 +409,19 @@ impl Pass for ClusterLightPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.cluster_cells);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_cluster_assign_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("ClusterLightPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_cluster_assign_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("light.cluster");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch — workgroup size is
         // `contracts::CLUSTER_ASSIGN_WORKGROUP_SIZE`. PR 8 supplies
         // the cluster-grid dispatch counts from the
@@ -448,7 +449,7 @@ pub struct GBufferPass {
     pub gbuffer_motion_depth: ResourceId,
     /// Hardware D32F depth (reverse-Z).
     pub depth: ResourceId,
-    pipeline: OnceLock<RenderPipeline>,
+    pipeline: Option<RenderPipeline>,
 }
 
 impl GBufferPass {
@@ -466,7 +467,7 @@ impl GBufferPass {
             gbuffer_normal_metallic,
             gbuffer_motion_depth,
             depth,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -487,17 +488,14 @@ impl Pass for GBufferPass {
         set.add(self.gbuffer_motion_depth);
         set.add(self.depth);
     }
-    fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("GBufferPass.record requires a GpuFrameContext");
-        // Lazy-init the 3-MRT + depth pipeline. PR 8 wires the
-        // MRT `begin_render_pass` + `draw_indexed_indirect` against
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_gbuffer_pipeline(device)?);
+        Ok(())
+    }
+    fn record(&mut self, _ctx: &mut PassContext) {
+        // PR 7.5: pipeline installed once at startup. PR 8 wires the
+        // 3-MRT `begin_render_pass` + `draw_indexed_indirect` against
         // the cull-pass-produced `IndirectDrawBuffer`.
-        let _ = self
-            .pipeline
-            .get_or_init(|| build_gbuffer_pipeline(gpu.device));
     }
 }
 
@@ -526,7 +524,7 @@ pub struct LightingAccumulationPass {
     pub shadow_atlas: ResourceId,
     /// HDR linear-space output.
     pub lit_color: ResourceId,
-    pipeline: OnceLock<RenderPipeline>,
+    pipeline: Option<RenderPipeline>,
 }
 
 impl LightingAccumulationPass {
@@ -551,7 +549,7 @@ impl LightingAccumulationPass {
             lights,
             shadow_atlas,
             lit_color,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -575,19 +573,16 @@ impl Pass for LightingAccumulationPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.lit_color);
     }
-    fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("LightingAccumulationPass.record requires a GpuFrameContext");
-        // Lazy-init the full-screen lighting pipeline (3-vertex
-        // triangle, no vertex buffers — full-screen via
-        // `@builtin(vertex_index)`). PR 8 wires `begin_render_pass`
-        // against the `LitColor` attachment + the Cook-Torrance
-        // bind-group reading G-buffer + cluster + shadow.
-        let _ = self
-            .pipeline
-            .get_or_init(|| build_lighting_pipeline(gpu.device));
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_lighting_pipeline(device)?);
+        Ok(())
+    }
+    fn record(&mut self, _ctx: &mut PassContext) {
+        // PR 7.5: full-screen lighting pipeline (3-vertex triangle, no
+        // vertex buffers — full-screen via `@builtin(vertex_index)`)
+        // installed at startup. PR 8 wires `begin_render_pass` against
+        // the `LitColor` attachment + the Cook-Torrance bind-group
+        // reading G-buffer + cluster + shadow.
     }
 }
 
@@ -606,7 +601,7 @@ pub struct SsaoPass {
     pub gbuffer_normal_metallic: ResourceId,
     /// Single-channel occlusion output.
     pub ssao_target: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl SsaoPass {
@@ -620,7 +615,7 @@ impl SsaoPass {
             depth,
             gbuffer_normal_metallic,
             ssao_target,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -639,17 +634,19 @@ impl Pass for SsaoPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.ssao_target);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_ssao_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("SsaoPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_ssao_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("post.fx.ssao");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch — workgroup size is (8,8,1);
         // PR 8 supplies (half-res-width / 8, half-res-height / 8, 1)
         // per `contracts::SSAO_RESOLUTION_DIVISOR`.
@@ -678,7 +675,7 @@ pub struct IblPass {
     pub depth: ResourceId,
     /// HDR linear-space output (pre-direct-light target).
     pub lit_color: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl IblPass {
@@ -698,7 +695,7 @@ impl IblPass {
             gbuffer_normal_metallic,
             depth,
             lit_color,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -720,17 +717,19 @@ impl Pass for IblPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.lit_color);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_ibl_evaluate_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("IblPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_ibl_evaluate_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("draw.opaque.ibl");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch — PR 8 supplies the screen
         // tile count derived from the output target size.
         cpass.dispatch_workgroups(1, 1, 1);
@@ -756,7 +755,7 @@ pub struct TaaPass {
     pub resolved: ResourceId,
     /// Next-frame history slot the pool ping-pongs into.
     pub history_next: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl TaaPass {
@@ -776,7 +775,7 @@ impl TaaPass {
             depth,
             resolved,
             history_next,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -798,17 +797,19 @@ impl Pass for TaaPass {
         set.add(self.resolved);
         set.add(self.history_next);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_taa_resolve_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("TaaPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_taa_resolve_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("post.fx.taa");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch. PR 8 supplies the screen-tile
         // count + the jitter uniform via
         // `engine_raster::post_fx::jitter_for_frame(ctx.frame_idx)`.
@@ -829,9 +830,9 @@ pub struct BloomPass {
     pub resolved: ResourceId,
     /// Bloom layer output.
     pub bloom_target: ResourceId,
-    pipeline_extract: OnceLock<ComputePipeline>,
-    pipeline_downsample: OnceLock<ComputePipeline>,
-    pipeline_upsample: OnceLock<ComputePipeline>,
+    pipeline_extract: Option<ComputePipeline>,
+    pipeline_downsample: Option<ComputePipeline>,
+    pipeline_upsample: Option<ComputePipeline>,
 }
 
 impl BloomPass {
@@ -840,9 +841,9 @@ impl BloomPass {
         Self {
             resolved,
             bloom_target,
-            pipeline_extract: OnceLock::new(),
-            pipeline_downsample: OnceLock::new(),
-            pipeline_upsample: OnceLock::new(),
+            pipeline_extract: None,
+            pipeline_downsample: None,
+            pipeline_upsample: None,
         }
     }
 }
@@ -860,26 +861,27 @@ impl Pass for BloomPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.bloom_target);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        // BloomPass owns three pipelines (extract → downsample → upsample
+        // per ADR-065 §5, 5 mip levels = `contracts::BLOOM_MIP_LEVELS`).
+        // PR 8 chains the downsample + upsample dispatches across the mip
+        // chain; the GPU kernel is a Jimenez-2014 dual-filter Kawase blur,
+        // and ADR-046's 1/255 channel + p99 ≤ 1% tolerance absorbs the
+        // kernel-shape difference vs the CPU oracle's `gaussian_blur_3x3`.
+        self.pipeline_extract = Some(build_bloom_extract_pipeline(device)?);
+        self.pipeline_downsample = Some(build_bloom_downsample_pipeline(device)?);
+        self.pipeline_upsample = Some(build_bloom_upsample_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("BloomPass.record requires a GpuFrameContext");
-        // Lazy-init the three bloom pipelines. PR 8 wires the
-        // down-sample chain + up-sample composite per ADR-065 §5
-        // (5 mip levels = `contracts::BLOOM_MIP_LEVELS`).
-        let extract = self
-            .pipeline_extract
-            .get_or_init(|| build_bloom_extract_pipeline(gpu.device))
-            .clone();
-        let _down = self
-            .pipeline_downsample
-            .get_or_init(|| build_bloom_downsample_pipeline(gpu.device));
-        let _up = self
-            .pipeline_upsample
-            .get_or_init(|| build_bloom_upsample_pipeline(gpu.device));
-        let mut cpass = gpu.encoder.begin_compute_pass("post.fx.bloom.extract");
-        cpass.set_pipeline(&extract);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(extract) = self.pipeline_extract.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(extract);
         // PR 7: placeholder extract dispatch. PR 8 chains
         // downsample + upsample dispatches across the mip chain.
         cpass.dispatch_workgroups(1, 1, 1);
@@ -950,7 +952,7 @@ pub struct TonemapPass {
     pub bloom: ResourceId,
     /// LDR output.
     pub tonemapped: ResourceId,
-    pipeline: OnceLock<ComputePipeline>,
+    pipeline: Option<ComputePipeline>,
 }
 
 impl TonemapPass {
@@ -960,7 +962,7 @@ impl TonemapPass {
             resolved,
             bloom,
             tonemapped,
-            pipeline: OnceLock::new(),
+            pipeline: None,
         }
     }
 }
@@ -979,17 +981,19 @@ impl Pass for TonemapPass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.tonemapped);
     }
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        self.pipeline = Some(build_tonemap_pipeline(device)?);
+        Ok(())
+    }
     fn record(&mut self, ctx: &mut PassContext) {
-        let gpu = ctx
-            .gpu
-            .as_mut()
-            .expect("TonemapPass.record requires a GpuFrameContext");
-        let pipeline = self
-            .pipeline
-            .get_or_init(|| build_tonemap_pipeline(gpu.device))
-            .clone();
-        let mut cpass = gpu.encoder.begin_compute_pass("post.fx.tonemap");
-        cpass.set_pipeline(&pipeline);
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
         // PR 7: placeholder dispatch. PR 8 wires the LDR output tile
         // count + the ACES exposure / bloom-mix uniforms.
         cpass.dispatch_workgroups(1, 1, 1);

@@ -134,6 +134,7 @@ pub fn run_scenario(s: &Scenario) -> Result<ScenarioReport, ScenarioError> {
             jitter: [jitter_vec.x, jitter_vec.y],
             input_extent: [in_w, in_h],
             output_extent: s.output_extent,
+            quality: engine_render::Quality::default(),
             user: &mut scratch,
         };
         let _ = provider

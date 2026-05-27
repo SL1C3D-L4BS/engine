@@ -100,6 +100,14 @@ impl Device {
     /// Initialise wgpu against any backend the runner supports and request a
     /// device at the named tier. Falls back to a software adapter only if
     /// `allow_fallback` is `true` — headless CI runners pass `true`.
+    ///
+    /// **Caveat:** `allow_fallback` is the engine-gpu name for wgpu's
+    /// `force_fallback_adapter` request. Passing `true` does not "allow
+    /// fallback if no GPU is present" — it *requires* a software adapter
+    /// (Lavapipe / SwiftShader / `wgpu` reference). Real-hardware
+    /// consumers must pass `false`; only headless-CI-style harnesses
+    /// that specifically want the software adapter should pass `true`.
+    /// Renaming the parameter is a future API cleanup.
     pub fn new(limits: DeviceLimits, allow_fallback: bool) -> Result<Self, GpuError> {
         Self::new_inner(limits, allow_fallback, None)
     }
