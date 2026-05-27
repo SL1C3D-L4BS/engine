@@ -44,6 +44,7 @@ engine-hub-core = { path = "crates/engine-hub-core" }
 engine-ui = { path = "crates/engine-ui" }
 engine-api = { path = "crates/engine-api" }
 engine-plugin-api = { path = "crates/engine-plugin-api" }
+engine-upscale-vendor = { path = "crates/engine-upscale-vendor" }
 
 # The Slang toolchain ships both a binary and a library; engine-render
 # consumes the library half (`Bundle`, `Artifact`, `Target`) so the

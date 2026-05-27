@@ -1,0 +1,51 @@
+[package]
+name = "engine-upscale-vendor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Phase 6 PR 5.5 scaffold per ADR-066 §1. Level-1 crate. Per-vendor
+# upscaler bindings (DLSS Streamline 2.x, AMD FSR 4, Intel XeSS 2) +
+# the owned ONNX temporal upscaler (`ort` binding per ADR-067) live
+# here behind cargo features. Default no-feature build mirrors the
+# Phase 5 trait-surface behaviour (every `supports()` returns false;
+# the cascade falls through to the OwnedBilinear provider in
+# `engine-render::upscale`).
+#
+# The feature gates default to off so the CI gate job + the default
+# `cargo build` produce a binary identical to the pre-PR-5.5
+# behaviour. The self-hosted GPU runner + local dev builds opt in
+# via `--features all-vendors`.
+
+[dependencies]
+engine-gpu = { workspace = true }
+engine-render = { workspace = true }
+
+[features]
+default = []
+
+# Per-vendor SDK bindings. Each feature, when activated, replaces the
+# trait-surface stub in this crate with a real FFI binding through the
+# corresponding `*-sys` crate vendored under
+# `tools/upscaler-vendor-sdks/`. The `*-sys` crates land in the same
+# PR that integrates the real SDK; until then, the feature gates exist
+# but their cfg-gated modules are empty placeholders.
+dlss = []
+fsr = []
+xess = []
+
+# The owned ONNX temporal upscaler (ADR-067). When `ort-runtime` is
+# enabled, this crate links the `ort` crate (ONNX Runtime binding) and
+# loads the bundled `temporal_upscaler_v1.onnx` model at first
+# `upscale()` call. Default off so CI doesn't pull native ORT
+# binaries.
+ort-runtime = []
+
+# Umbrella feature for shipping the full upscaler matrix on a host
+# that has every vendor SDK + ORT runtime available. Local dev +
+# self-hosted runner builds use this.
+all-vendors = ["dlss", "fsr", "xess", "ort-runtime"]
+
+[lints]
+workspace = true

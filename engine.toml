@@ -77,3 +77,37 @@ fma_on_sim_path = false
 # until consent is recorded.
 consent = "opt-in"
 metrics_port = 9091
+
+# Upscaler selection override (Phase 6 PR 5.5 schema; runtime reader
+# lands with the SDK integration follow-up per ADR-005 §Consequences
+# + ADR-066 §6).
+#
+# `provider`:
+#   "auto"           — walk the cascade (DLSS → FSR → XeSS →
+#                      OwnedOnnxTemporal → OwnedBilinear) and pick the
+#                      first whose supports() returns true. This is the
+#                      Phase-6 default and the recommended setting.
+#   "dlss"           — force the DLSS provider; falls through to
+#                      OwnedBilinear if the active build doesn't have
+#                      `--features dlss` or the host lacks the
+#                      Streamline runtime.
+#   "fsr"            — force AMD FSR 4.
+#   "xess"           — force Intel XeSS 2.
+#   "owned-onnx"     — force the owned ONNX temporal upscaler.
+#   "owned-bilinear" — force the bilinear placeholder (fastest, lowest
+#                      quality; the spec-baseline RX-580 milestone uses
+#                      this when no other provider is available).
+#
+# `quality`:
+#   "performance"    — render at 50% scale, upscale to display.
+#   "balanced"       — render at 67% scale.
+#   "quality"        — render at 75% scale.
+#   "ultra-quality"  — render at 100% scale (no internal scaling).
+#
+# Both fields are optional; their omission inherits the cascade
+# defaults. The bench JSON report (ADR-066 §Consequences) records the
+# selected provider + reason on every run.
+#
+# [upscaler]
+# provider = "auto"
+# quality  = "balanced"

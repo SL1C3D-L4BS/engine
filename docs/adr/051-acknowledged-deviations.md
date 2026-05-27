@@ -107,7 +107,47 @@ engine-i18n to ICU4X) becomes a new entry that supersedes the prior.
 - **Acknowledged:** 2026-05-24 (this ADR). Implementation since:
   Phase 0 foundation build.
 
-### 4. Format for adding new entries
+### 4. Deviation: ONNX Runtime as owned-upscaler backend
+
+- **Spec:** §IV.4.A spec line 1634 names an owned ONNX temporal
+  upscaler as the universal-coverage fallback. Spec R-02 prefers
+  owned subsystems but is silent on the inference runtime.
+- **As shipped:** ADR-067 §2 specifies the `OwnedOnnxTemporal`
+  provider; the runtime binding consumes the `ort` crate (Rust
+  wrapper around ONNX Runtime). The crate is gated behind the
+  `ort-runtime` cargo feature in `crates/engine-upscale-vendor/`
+  (Phase 6 PR 5.5 scaffold). The bundled model
+  (`crates/engine-render/assets/onnx/temporal_upscaler_v1.onnx`)
+  is content-addressed via BLAKE3.
+- **Why:** training, exporting, and running a competitive temporal
+  upscaler model on the engine's target hardware is a multi-year
+  project. ONNX Runtime is the vendor-neutral standard with the
+  broadest hardware-backend support (CUDA, ROCm, DirectML, CoreML,
+  CPU). Owning the *model* + the *integration* + the *trait
+  surface* while consuming the *runtime* matches ADR-025's "engine
+  owns the use of the primitive, not the primitive itself" stance
+  applied to crypto. The same precedent applies here.
+- **Why it's safe:** the model is content-addressed and BLAKE3-
+  verified at load time. The runtime version is pinned in
+  `engine-upscale-vendor`'s Cargo.toml. Per-frame inference operates
+  on GPU tensors (no untrusted-parse surface in the per-frame path).
+  The `ort` crate itself is MIT-licensed Rust; the underlying ONNX
+  Runtime is Apache-2.0.
+- **Gate condition under which to revisit:** when a pure-WGSL
+  inference path achieves competitive quality + perf without the
+  ORT dependency (estimated trigger: 2030+ as wgpu's compute
+  feature surface matures with INT8 matmul + f16 cross-backend).
+- **Acknowledged:** 2026-05-27 (this addendum). Implementation
+  status: scaffold in Phase 6 PR 5.5
+  (`crates/engine-upscale-vendor/` exists; the `ort-runtime`
+  feature exists; the real binding + model bundling land in a
+  follow-up that requires SDK access + Git LFS setup). The
+  `OwnedOnnxTemporal` stub provider in `engine-render::upscale`
+  ships unchanged until then; the cascade reservation through
+  `with_phase6_defaults()` already pins the position in the
+  selection order per ADR-066 §6.
+
+### 5. Format for adding new entries
 
 Future deviations land here via ADR amendments to this file:
 
