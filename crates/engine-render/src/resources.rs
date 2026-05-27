@@ -167,3 +167,14 @@ impl ResourceType for TonemappedColor {
     const KIND: ResourceKind = ResourceKind::Texture;
     const NAME: &'static str = "tonemapped";
 }
+
+/// Upscaler output (PR 5, ADR-005). Produced by
+/// [`crate::passes::UpscalePass`] from the TAA-resolved HDR buffer;
+/// consumed by [`crate::passes::TonemapPass`] on the upscale-path
+/// variant (TAA → Upscale → Tonemap, per ADR-053 PR-5 comment in
+/// [`crate::passes`]).
+pub struct UpscaledColor;
+impl ResourceType for UpscaledColor {
+    const KIND: ResourceKind = ResourceKind::Texture;
+    const NAME: &'static str = "upscaled";
+}

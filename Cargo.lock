@@ -398,6 +398,15 @@ name = "engine-audio"
 version = "0.0.0"
 
 [[package]]
+name = "engine-bench-frame-pacing"
+version = "0.0.0"
+dependencies = [
+ "engine-math",
+ "engine-raster",
+ "engine-render",
+]
+
+[[package]]
 name = "engine-core"
 version = "0.0.0"
 dependencies = [

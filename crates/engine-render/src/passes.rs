@@ -21,6 +21,17 @@
 //! 8. [`TaaPass`] — `LitColor` + `TaaHistory` + motion → `TaaResolvedColor`.
 //! 9. [`BloomPass`] — `TaaResolvedColor` → `BloomTexture`.
 //! 10. [`TonemapPass`] — TAA + bloom → `TonemappedColor`.
+//!
+//! ## Upscale-path variant (PR 5, ADR-005 + ADR-053)
+//!
+//! When the renderer is upscaling internal-resolution output to a
+//! larger display, [`UpscalePass`] slots between [`TaaPass`] and
+//! [`TonemapPass`]: `TaaResolvedColor` → `UpscaledColor` → tonemap.
+//! Bloom still extracts from the TAA-resolved (pre-upscale) buffer to
+//! preserve energy; tonemap composites the bloom layer over the
+//! upscaled HDR. Selection between the no-upscale and upscale variants
+//! is a graph-builder decision; both variants compile and execute
+//! through the same [`RenderGraph`] API.
 
 use crate::render_graph::{Pass, PassContext, ResourceId, ResourceSet, Track};
 
@@ -416,6 +427,50 @@ impl Pass for BloomPass {
     }
 }
 
+/// Upscale pass (PR 5, ADR-005 + ADR-053). Reads the TAA-resolved HDR
+/// target; writes the upscaled HDR target at the display resolution.
+/// The trait surface that picks the algorithm lives in
+/// [`crate::upscale::UpscalerRegistry`]; the pass body is the graph
+/// adapter that the renderer / oracle / bench drive.
+///
+/// Skipping the upscale pass (no-upscale variant) is the PR-4 graph
+/// shape: bloom + tonemap read `TaaResolvedColor` directly. With the
+/// upscale variant, bloom still extracts from the TAA-resolved buffer
+/// (chroma + energy invariants) and tonemap reads `upscaled` for its
+/// HDR input.
+#[derive(Debug, Clone, Copy)]
+pub struct UpscalePass {
+    /// TAA-resolved HDR input (internal resolution).
+    pub resolved: ResourceId,
+    /// Upscaled HDR output (display resolution).
+    pub upscaled: ResourceId,
+}
+
+impl Pass for UpscalePass {
+    fn name(&self) -> &'static str {
+        "post.fx.upscale"
+    }
+    fn track(&self) -> Track {
+        Track::A
+    }
+    fn reads(&self, set: &mut ResourceSet) {
+        set.add(self.resolved);
+    }
+    fn writes(&self, set: &mut ResourceSet) {
+        set.add(self.upscaled);
+    }
+    fn record(&mut self, _ctx: &mut PassContext) {
+        // Resolves the active [`crate::upscale::UpscalerProvider`] via
+        // the renderer's [`crate::upscale::UpscalerRegistry`]; builds
+        // an [`crate::upscale::UpscaleCtx`] pointing at the input /
+        // output textures and the current-frame jitter; dispatches
+        // through `provider.upscale(&mut ctx)`. The CPU oracle in
+        // `engine_raster::upscale::bilinear_upscale` is the reference
+        // for the bilinear placeholder; vendor SDK dispatch is the
+        // Phase 6 follow-up.
+    }
+}
+
 /// Tonemap + bloom composite (PR 4). Reads the TAA-resolved HDR + the
 /// bloom layer; writes the final LDR target (`TonemappedColor`).
 #[derive(Debug, Clone, Copy)]
@@ -632,6 +687,95 @@ mod tests {
         // Bloom + Tonemap form the tail of the post chain.
         assert!(taa_idx < bloom_idx, "taa before bloom");
         assert!(taa_idx < tonemap_idx, "taa before tonemap");
+        assert!(bloom_idx < tonemap_idx, "bloom before tonemap");
+    }
+
+    /// PR-5 smoke test: the upscale-path variant schedules
+    /// `taa → upscale → tonemap` with bloom still feeding off the
+    /// TAA-resolved buffer.
+    #[test]
+    fn pr5_upscale_variant_schedules_taa_upscale_tonemap() {
+        let mut g = RenderGraph::new();
+        let queue = ResourceId(0);
+        let casters = ResourceId(1);
+        let lights = ResourceId(2);
+        let indirect = ResourceId(3);
+        let shadow_atlas = ResourceId(4);
+        let cluster_cells = ResourceId(5);
+        let gbuf_ar = ResourceId(6);
+        let gbuf_nm = ResourceId(7);
+        let gbuf_md = ResourceId(8);
+        let depth = ResourceId(9);
+        let lit = ResourceId(10);
+        let taa_history_prev = ResourceId(11);
+        let taa_history_next = ResourceId(12);
+        let taa_resolved = ResourceId(13);
+        let upscaled = ResourceId(14);
+        let bloom = ResourceId(15);
+        let tonemapped = ResourceId(16);
+
+        g.add_pass(CullPass {
+            render_queue: queue,
+            indirect_draws: indirect,
+        });
+        g.add_pass(CsmShadowPass {
+            shadow_casters: casters,
+            shadow_atlas,
+        });
+        g.add_pass(ClusterLightPass {
+            lights,
+            cluster_cells,
+        });
+        g.add_pass(GBufferPass {
+            indirect_draws: indirect,
+            gbuffer_albedo_roughness: gbuf_ar,
+            gbuffer_normal_metallic: gbuf_nm,
+            gbuffer_motion_depth: gbuf_md,
+            depth,
+        });
+        g.add_pass(LightingAccumulationPass {
+            gbuffer_albedo_roughness: gbuf_ar,
+            gbuffer_normal_metallic: gbuf_nm,
+            gbuffer_motion_depth: gbuf_md,
+            depth,
+            cluster_cells,
+            lights,
+            shadow_atlas,
+            lit_color: lit,
+        });
+        g.add_pass(TaaPass {
+            lit_color: lit,
+            history: taa_history_prev,
+            gbuffer_motion_depth: gbuf_md,
+            depth,
+            resolved: taa_resolved,
+            history_next: taa_history_next,
+        });
+        g.add_pass(UpscalePass {
+            resolved: taa_resolved,
+            upscaled,
+        });
+        g.add_pass(BloomPass {
+            resolved: taa_resolved,
+            bloom_target: bloom,
+        });
+        g.add_pass(TonemapPass {
+            resolved: upscaled,
+            bloom,
+            tonemapped,
+        });
+
+        let n = g.compile().expect("graph compiles");
+        assert_eq!(n, 9);
+        let names = g.scheduled_names().unwrap();
+        let pos = |needle: &str| names.iter().position(|&s| s == needle).unwrap();
+        let taa_idx = pos("post.fx.taa");
+        let upscale_idx = pos("post.fx.upscale");
+        let bloom_idx = pos("post.fx.bloom");
+        let tonemap_idx = pos("post.fx.tonemap");
+        assert!(taa_idx < upscale_idx, "taa before upscale");
+        assert!(taa_idx < bloom_idx, "taa before bloom");
+        assert!(upscale_idx < tonemap_idx, "upscale before tonemap");
         assert!(bloom_idx < tonemap_idx, "bloom before tonemap");
     }
 }

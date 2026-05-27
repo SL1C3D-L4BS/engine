@@ -38,6 +38,13 @@
 //!   8-tap SSAO, soft-knee bloom extract + composite, ACES filmic
 //!   tonemap. Spec post-chain order:
 //!   `SSAO → TAA → Bloom → Tonemap → (grade) → Upscale`.
+//!
+//! ## Phase 5 PR 5 status
+//!
+//! [`upscale`] — bilinear upscale CPU reference for ADR-005's
+//! `Owned::Bilinear` placeholder. Pure CPU `+ − × ÷`, deterministic
+//! per ADR-013. The frame-pacing milestone bench
+//! (`bin/engine-bench-frame-pacing/`) is the integration consumer.
 
 pub mod cluster;
 pub mod framebuffer;
@@ -49,6 +56,7 @@ pub mod sample;
 pub mod scene;
 pub mod shading;
 pub mod shadow;
+pub mod upscale;
 
 pub use cluster::{
     CLUSTER_CELL_COUNT, CLUSTER_SLICES, CLUSTER_TILES_X, CLUSTER_TILES_Y, ClusterCell, ClusterGrid,
@@ -80,4 +88,8 @@ pub use shadow::{
     ATLAS_DIM, CASCADE_DIM, CSM_CASCADES, Cascade, Cascades, PRACTICAL_SPLIT_LAMBDA, ShadowAtlas,
     atlas_origin, build_cascades, cascade_splits, cascade_view_projection, render_cascades,
     sample_shadow_pcf, select_cascade,
+};
+pub use upscale::{
+    MILESTONE_INPUT_HEIGHT, MILESTONE_INPUT_WIDTH, MILESTONE_OUTPUT_HEIGHT, MILESTONE_OUTPUT_WIDTH,
+    bilinear_upscale, bilinear_upscale_to_vec,
 };

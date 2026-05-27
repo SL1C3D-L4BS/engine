@@ -46,15 +46,31 @@
 //! [`resources::TaaResolvedColor`], [`resources::BloomTexture`],
 //! [`resources::TonemappedColor`]. CPU oracles live in
 //! `engine_raster::ibl` and `engine_raster::post_fx`.
+//!
+//! ## Phase 5 PR 5 status
+//!
+//! The upscaler trait surface (ADR-005) lands in [`upscale`]:
+//! [`upscale::UpscalerProvider`] + the four PR-5 providers
+//! ([`upscale::VendorDlss`], [`upscale::VendorFsr`],
+//! [`upscale::VendorXess`] vendor stubs + [`upscale::OwnedBilinear`]
+//! placeholder) + [`upscale::UpscalerRegistry`] with the ADR-005
+//! selection policy. A new render-graph pass [`UpscalePass`] slots
+//! between TAA and tonemap on the upscale-path variant; resource tag
+//! [`resources::UpscaledColor`] carries its output. The CPU oracle for
+//! the bilinear placeholder is `engine_raster::upscale`, and the
+//! frame-pacing milestone bench binary
+//! `bin/engine-bench-frame-pacing/` drives the end-to-end PR-5 path
+//! (ADR-047 §7 informational mode; the gate activates in PR 6).
 
 pub mod passes;
 pub mod render_graph;
 pub mod resources;
+pub mod upscale;
 
 pub use engine_gpu as gpu;
 pub use passes::{
     BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, IblPass,
-    LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass,
+    LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass, UpscalePass,
 };
 pub use render_graph::{
     Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind, ResourceSet, Track,
@@ -63,4 +79,9 @@ pub use resources::{
     BloomTexture, BrdfLut, ClusterCells, DepthBuffer, GBufferAlbedoRoughness, GBufferMotionDepth,
     GBufferNormalMetallic, IblProbeSet, IndirectDrawBuffer, LightSsbo, LitColor, RenderQueue,
     ShadowAtlas, ShadowCasters, SsaoTexture, TaaHistory, TaaResolvedColor, TonemappedColor,
+    UpscaledColor,
+};
+pub use upscale::{
+    OwnedBilinear, SelectionLogger, UpscaleCtx, UpscaleError, UpscaleResult, UpscalerKind,
+    UpscalerProvider, UpscalerRegistry, VendorDlss, VendorFsr, VendorXess,
 };

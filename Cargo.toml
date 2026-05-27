@@ -4,6 +4,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "bin/engine-bench-frame-pacing",
     "bin/engine-debug",
     "bin/engine-repl",
     "crates/*",

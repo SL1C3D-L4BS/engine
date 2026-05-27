@@ -1,0 +1,25 @@
+# Frame-pacing budgets — ADR-016 Frame Pacing Contract + ADR-047 §3 thresholds.
+#
+# The `engine-bench-frame-pacing` binary reads this file with `--budgets PATH`
+# and uses the thresholds to evaluate `--gate REPORT.json`. Both thresholds
+# must hold for a PASS verdict.
+#
+# Phase 5 PR 5 ships the file but the gate is informational
+# (`continue-on-error: true` in CI per ADR-047 §7). PR 6 promotes the gate
+# to a required status check when the self-hosted RX 6700 XT runner stands
+# up; the same thresholds apply.
+#
+# Changes to either threshold require an ADR amendment per ADR-047 §5
+# (appeal procedure) — see `docs/audit/oracle-exceptions.md` for the
+# adjacent oracle-divergence register.
+
+[budgets]
+# Frame-time 99th percentile budget, in milliseconds. At the 60 FPS target,
+# 18.3 ms = 1.1 × the 16.6 ms vsync interval (10 % headroom for vsync slop).
+p99_ms = 18.3
+
+# Frame-time standard deviation budget, in milliseconds. 1.04 ms is the
+# spec-published "no observable jitter at 60 Hz on the reference monitor"
+# bound (target/16). Tight: ADR-047 §Risks documents the sched-ext + cachyos
+# stack as the mitigation against kernel-side σ noise.
+stddev_ms = 1.04

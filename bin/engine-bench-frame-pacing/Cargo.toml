@@ -1,0 +1,19 @@
+[package]
+name = "engine-bench-frame-pacing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "engine-bench-frame-pacing"
+path = "src/main.rs"
+
+[dependencies]
+engine-math = { workspace = true }
+engine-raster = { path = "../../testbed/engine-raster" }
+engine-render = { workspace = true }
