@@ -224,6 +224,40 @@ impl UpscalerProvider for OwnedBilinear {
     }
 }
 
+/// Owned ONNX temporal upscaler (ADR-067 §2). The trait surface
+/// reservation Phase 5 PR 5 deferred, now filled.
+///
+/// `supports()` is stubbed at `false` until the `ort` (ONNX Runtime)
+/// binding and the trained `temporal_upscaler_v1.onnx` model bundle
+/// land in a follow-up. When activated, this provider becomes the
+/// universal-coverage entry in the cascade — it slots above
+/// [`OwnedBilinear`] but below the vendor SDKs per ADR-066 §6.
+///
+/// The Phase 6 PR 5 surface ships the *cascade position* + the trait
+/// implementation skeleton so a future `OwnedOnnxTemporal::with_model`
+/// constructor can land without rewiring the registry. The
+/// `OwnedOnnx` discriminant in [`UpscalerKind`] has been reserved
+/// since Phase 5 PR 5.
+pub struct OwnedOnnxTemporal;
+
+impl UpscalerProvider for OwnedOnnxTemporal {
+    fn kind(&self) -> UpscalerKind {
+        UpscalerKind::OwnedOnnx
+    }
+    fn supports(&self, _device: &Device) -> bool {
+        // Stub. ADR-067 §6 states `supports()` should return true
+        // whenever the ONNX runtime can initialize; that requires the
+        // `ort` binding which lands in a follow-up. Until then the
+        // cascade falls through to `OwnedBilinear` on every host —
+        // exactly the Phase-5 behaviour, preserved while the
+        // discriminant is wired through the registry.
+        false
+    }
+    fn upscale(&self, _ctx: &mut UpscaleCtx<'_>) -> Result<UpscaleResult, UpscaleError> {
+        Err(UpscaleError::NotSupported)
+    }
+}
+
 /// Callback invoked by the registry when a provider is selected. The
 /// renderer points this at its `engine_telemetry` channel; the bench
 /// binary captures it into the JSON report. Owning the dependency at
@@ -249,15 +283,39 @@ impl UpscalerRegistry {
         }
     }
 
-    /// Populate the registry with the four PR-5 providers in ADR-005
-    /// priority order: DLSS → FSR → XeSS → OwnedBilinear. With every
-    /// vendor stub returning `supports() == false`, selection on every
-    /// host falls through to bilinear.
+    /// Populate the registry with the four PR-5-shipped providers in
+    /// ADR-005 priority order: DLSS → FSR → XeSS → OwnedBilinear.
+    ///
+    /// Superseded by [`UpscalerRegistry::with_phase6_defaults`], which
+    /// inserts the [`OwnedOnnxTemporal`] provider between XeSS and
+    /// bilinear per ADR-066 §6. Both helpers fall through to
+    /// `OwnedBilinear` on every host while the vendor + ORT bindings
+    /// remain stubbed.
+    #[deprecated(since = "0.3.0", note = "Use `with_phase6_defaults` instead.")]
     pub fn with_phase5_defaults() -> Self {
         let mut r = Self::new();
         r.register(Box::new(VendorDlss));
         r.register(Box::new(VendorFsr));
         r.register(Box::new(VendorXess));
+        r.register(Box::new(OwnedBilinear));
+        r
+    }
+
+    /// Populate the registry with the five Phase-6 providers in
+    /// ADR-066 §6 priority order:
+    /// DLSS → FSR → XeSS → OwnedOnnxTemporal → OwnedBilinear.
+    ///
+    /// Until the vendor SDKs link and the `ort` binding lands, the
+    /// first four return `supports() == false` and selection falls
+    /// through to `OwnedBilinear` on every host — same as the
+    /// Phase-5 default, but with the ONNX provider reserved in the
+    /// cascade so a future SDK-bringing PR is a binding swap only.
+    pub fn with_phase6_defaults() -> Self {
+        let mut r = Self::new();
+        r.register(Box::new(VendorDlss));
+        r.register(Box::new(VendorFsr));
+        r.register(Box::new(VendorXess));
+        r.register(Box::new(OwnedOnnxTemporal));
         r.register(Box::new(OwnedBilinear));
         r
     }
@@ -399,7 +457,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn registry_phase5_defaults_order_is_dlss_fsr_xess_bilinear() {
+        // Surface-level smoke for the deprecated constructor — the
+        // existing PR-5 callsite shape continues to compile and yields
+        // the original four-provider cascade.
         let r = UpscalerRegistry::with_phase5_defaults();
         assert_eq!(r.len(), 4);
         assert!(!r.is_empty());
@@ -412,6 +474,60 @@ mod tests {
                 UpscalerKind::OwnedBilinear,
             ]
         );
+    }
+
+    #[test]
+    fn registry_phase6_defaults_inserts_onnx_above_bilinear() {
+        let r = UpscalerRegistry::with_phase6_defaults();
+        assert_eq!(r.len(), 5);
+        assert_eq!(
+            r.kinds(),
+            vec![
+                UpscalerKind::Dlss,
+                UpscalerKind::Fsr,
+                UpscalerKind::Xess,
+                UpscalerKind::OwnedOnnx,
+                UpscalerKind::OwnedBilinear,
+            ]
+        );
+    }
+
+    #[test]
+    fn owned_onnx_temporal_is_stubbed_until_ort_lands() {
+        let mut scratch: u32 = 0;
+        let mut ctx = UpscaleCtx {
+            frame_idx: 0,
+            jitter: [0.0, 0.0],
+            input_extent: [1280, 720],
+            output_extent: [2560, 1440],
+            user: &mut scratch,
+        };
+        assert_eq!(
+            OwnedOnnxTemporal.upscale(&mut ctx),
+            Err(UpscaleError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn phase6_cascade_falls_through_to_bilinear_until_onnx_supports() {
+        // With OwnedOnnxTemporal::supports() returning false the
+        // cascade walks DLSS → FSR → XeSS → OwnedOnnx → OwnedBilinear
+        // and lands on bilinear. When the `ort` binding lands and the
+        // ONNX provider's `supports()` flips to true, this test must
+        // change — that's the signal that the cascade behaviour
+        // shifted.
+        let r = UpscalerRegistry::with_phase6_defaults();
+        let mut chosen: Option<UpscalerKind> = None;
+        let mut logger_box: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| chosen = Some(k));
+        let logger: SelectionLogger<'_> = &mut *logger_box;
+        // Predicate mirrors what `supports()` returns: vendor + onnx
+        // false, bilinear true.
+        let picked = r
+            .select_with(|p| matches!(p.kind(), UpscalerKind::OwnedBilinear), logger)
+            .expect("bilinear must be selectable");
+        assert_eq!(picked.kind(), UpscalerKind::OwnedBilinear);
+        drop(logger_box);
+        assert_eq!(chosen, Some(UpscalerKind::OwnedBilinear));
     }
 
     #[test]

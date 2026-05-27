@@ -59,7 +59,7 @@ fn empty_registry_selects_nothing() {
 
 #[test]
 fn all_false_predicate_selects_nothing() {
-    let r = UpscalerRegistry::with_phase5_defaults();
+    let r = UpscalerRegistry::with_phase6_defaults();
     let mut log: Vec<UpscalerKind> = Vec::new();
     let picked = {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));
@@ -75,7 +75,7 @@ fn bilinear_falls_through_when_vendors_decline() {
     // The PR-5 stock registry has DLSS / FSR / XeSS vendor stubs that all
     // decline + the OwnedBilinear placeholder which accepts universally.
     // The cascade must walk past the vendors and pick bilinear.
-    let r = UpscalerRegistry::with_phase5_defaults();
+    let r = UpscalerRegistry::with_phase6_defaults();
     let mut log: Vec<UpscalerKind> = Vec::new();
     let picked_kind = {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));
@@ -94,7 +94,7 @@ fn vendor_wins_when_supported_first() {
     // If DLSS reports support, the cascade must stop there even though
     // bilinear later in the list would also accept. "Vendor first" is
     // the ADR-005 §Decision priority.
-    let r = UpscalerRegistry::with_phase5_defaults();
+    let r = UpscalerRegistry::with_phase6_defaults();
     let mut log: Vec<UpscalerKind> = Vec::new();
     let picked_kind = {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));
@@ -114,7 +114,7 @@ fn vendor_wins_when_supported_first() {
 fn first_true_wins_in_explicit_order() {
     // A registry with mixed-truth predicate over Fsr / Xess / Bilinear
     // — first match wins, walking in registration order.
-    let r = UpscalerRegistry::with_phase5_defaults();
+    let r = UpscalerRegistry::with_phase6_defaults();
     let mut log: Vec<UpscalerKind> = Vec::new();
     let picked_kind = {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));
@@ -137,7 +137,7 @@ fn first_true_wins_in_explicit_order() {
 
 #[test]
 fn logger_fires_exactly_once_on_match() {
-    let r = UpscalerRegistry::with_phase5_defaults();
+    let r = UpscalerRegistry::with_phase6_defaults();
     let mut log: Vec<UpscalerKind> = Vec::new();
     {
         let mut closure: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| log.push(k));

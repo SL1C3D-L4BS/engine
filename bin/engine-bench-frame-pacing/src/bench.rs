@@ -95,7 +95,7 @@ pub fn run_scenario(s: &Scenario) -> Result<ScenarioReport, ScenarioError> {
     // PR-5 invariant — bilinear is the chosen path on every supported
     // host — is verified inside `engine-render`'s unit tests; the bench
     // assumes the placeholder.
-    let _ = UpscalerRegistry::with_phase5_defaults();
+    let _ = UpscalerRegistry::with_phase6_defaults();
     let provider = OwnedBilinear;
 
     let mut frame_times_ns: Vec<u64> = Vec::with_capacity(s.frames as usize);
