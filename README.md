@@ -2,9 +2,10 @@
 
 A Rust-first, zero-runtime-dependency game engine and platform.
 
-This repository is the monorepo through **Phase 4** (SCRIPTING), audited
-and gated for Phase 5 (RENDERING FOUNDATION). The crate tree, levels,
-and architecture follow the authoritative specification:
+This repository is the monorepo through **Phase 5** (RENDERING
+FOUNDATION, Track A — deferred PBR, software rasterizer oracle,
+RX-580 @ 60 FPS @ 1440p milestone). The crate tree, levels, and
+architecture follow the authoritative specification:
 
 > `~/Resources/documentation/ENGINE_SPECIFICATION_v2.0.md`
 
@@ -189,8 +190,69 @@ build verification. CI gains a `wgpu::` grep guard, a
 `cargo-semver-checks` step, and a scheduled reproducible-build
 workflow as part of the audit's remediation.
 
-The upper layers (render, physics, audio, net, ai, editor, hub, ui,
-api, plugin-api) remain stubs and are built across the later phases.
-Phase 5 (RENDERING FOUNDATION, Track A — deferred PBR, software
-rasterizer oracle, RX 580 @ 60 FPS @ 1440p milestone) is next on
-deck — see spec Part XXI and ADR-053.
+Phase 5 (RENDERING FOUNDATION, Track A) closed 2026-05-27 across six
+PRs per ADR-053. The renderer is real: deferred PBR + cluster lights +
+CSM + IBL + post-FX + upscaler trait surface, with the software
+rasterizer testbed (`testbed/engine-raster/`) serving as the cross-
+backend pixel-parity oracle (ADR-046).
+
+- **PR 1 — Render-graph trait surface + rasterizer oracle.** The
+  `engine_render::render_graph` trait surface (Pass, Resource,
+  ResourceSet, RenderGraph, Track) lands alongside the substantive
+  software rasterizer. Pixel-parity oracle, ADR-039 + ADR-046.
+- **PR 2 — `engine-gpu` owned wgpu wrapper + bindless heap + BC
+  import.** New Level-1 crate `engine-gpu` is the only crate
+  permitted to name `wgpu::*` (ADR-049 boundary, CI grep guard).
+  `BindlessHeap` (24-bit slot + 8-bit generation, LIFO free-list,
+  ADR-044), `TextureMeta` BC{4,5,7} import header (ADR-045),
+  `tools/engine-tex-compress/` runtime.
+- **PR 3 — Deferred G-buffer + cluster lights + CSM.** The first
+  visible image: deferred geometry pass with bindless-indexed slots,
+  cull + cluster-lights compute (16×9×24 grid, 32 lights/cluster cap),
+  CSM (practical-split λ=0.6, 4096² atlas, Vogel-disk 16-tap PCF),
+  lighting accumulation (Cook-Torrance + cluster + CSM). ADR-040 +
+  ADR-043.
+- **PR 4 — IBL L2 SH probes + post-FX chain.** IBL (128 probes,
+  Karis split-sum), SSAO, bloom, ACES tonemap, TAA (Halton 2,3
+  period-8 jitter, YCgCo neighbourhood-clip rejection, motion-vector
+  reprojection). The full 10-pass Track-A schedule pinned. ADR-041 +
+  ADR-042.
+- **PR 5 — UpscalerProvider trait + RX-580 milestone bench.** Four
+  upscalers ship: DLSS / FSR / XeSS as `supports() = false` vendor
+  stubs (real bindings Phase 6), `OwnedBilinear` placeholder. The
+  ADR-005 selection cascade (vendor > best match > owned) is
+  exercised by `crates/engine-render/tests/upscale_selection.rs`.
+  `bin/engine-bench-frame-pacing/` ships the milestone harness with
+  an owned arg parser, owned JSON report, owned TOML budgets reader,
+  and a deterministic CPU oracle workload (the
+  `combined_deferred_scene` full pipeline + bilinear upscale). ADR-
+  005 + ADR-053 §PR-5.
+- **PR 6 — Frame-pacing CI gate + Phase 5 closure.** The
+  `frame_pacing` job lands in `.github/workflows/ci.yml`, runs on a
+  `self-hosted-gpu-rx6700xt` runner, evaluates p99 + σ against
+  `tools/frame-pacing/budgets.toml`, and uploads the JSON report as
+  a workflow artifact. The job is **informational** (continue-on-
+  error) until the self-hosted RX 6700 XT runner is provisioned per
+  `docs/runbooks/frame-pacing-runner.md`; the promotion path is
+  documented in the runbook. ADR-016 + ADR-047 + ADR-053 §PR-6.
+
+PR 6 also closes two audit follow-ups:
+
+- **Full ADR-060 sli aggregate-ops surface.** The 12 opcodes
+  0x70-0x7B (ArrayNew/Get/Set/Len, MapNew/Get/Set, StructNew/Get/Set,
+  ClosureMake, CallClosure) landed pre-Phase-5 alongside the
+  hand-assembled oracle; PR 6 wires codegen: AST + parse + typeck
+  for `[1, 2, 3]` array literals and `[k => v, k => v]` map literals,
+  plus codegen for `Field`, `Index`, `StructLit`, and `Closure`
+  (free-variable discovery + capture-list emission). End-to-end
+  `tests/aggregate_ops_codegen.rs` exercises source-through-VM.
+- **Missing ADR-048 pak overlay tests.** Two follow-up tests
+  (`unmount_handle_drops_overlay_assets`,
+  `dedupe_refcount_does_not_double_free`) close the §Verification
+  surface from the audit.
+
+**Engine Core v0.2** is tagged at the close of Phase 5.
+
+The upper layers (physics, audio, net, ai, editor, hub, ui, api,
+plugin-api) remain stubs and are built across Phases 6+ per the
+spec's level and phase map.

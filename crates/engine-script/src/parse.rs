@@ -53,6 +53,13 @@ impl<'a> Parser<'a> {
         self.toks[self.pos].kind
     }
 
+    fn peek_kind_at(&self, offset: usize) -> TokenKind {
+        self.toks
+            .get(self.pos + offset)
+            .map(|t| t.kind)
+            .unwrap_or(TokenKind::Eof)
+    }
+
     fn bump(&mut self) -> &Token {
         let t = &self.toks[self.pos];
         if !matches!(t.kind, TokenKind::Eof) {
@@ -547,6 +554,76 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RParen, "`)`")?;
                 Some(e)
             }
+            TokenKind::LBracket => {
+                // Primary `[` — array or map literal (ADR-060).
+                // The postfix `[` for indexing is consumed inside
+                // `parse_postfix`, which is layered on top of
+                // `parse_primary`, so this arm never shadows it.
+                self.bump();
+                // Empty `[]` is an empty array literal; `[:]` is the
+                // empty map literal. Both flow through here.
+                if matches!(self.peek_kind(), TokenKind::RBracket) {
+                    let close = self.bump().clone();
+                    let span = tok.span.join(close.span);
+                    return Some(Expr {
+                        kind: ExprKind::ArrayLit(Vec::new()),
+                        span,
+                        ty: Type::Unknown,
+                    });
+                }
+                if matches!(self.peek_kind(), TokenKind::Colon)
+                    && matches!(self.peek_kind_at(1), TokenKind::RBracket)
+                {
+                    self.bump(); // `:`
+                    let close = self.bump().clone(); // `]`
+                    let span = tok.span.join(close.span);
+                    return Some(Expr {
+                        kind: ExprKind::MapLit(Vec::new()),
+                        span,
+                        ty: Type::Unknown,
+                    });
+                }
+                let first = self.parse_expr(0)?;
+                // Disambiguator: a `=>` after the first element means
+                // map literal; otherwise the first element is an array
+                // element.
+                if matches!(self.peek_kind(), TokenKind::FatArrow) {
+                    self.bump(); // `=>`
+                    let v = self.parse_expr(0)?;
+                    let mut pairs: Vec<(Expr, Expr)> = vec![(first, v)];
+                    while self.eat(TokenKind::Comma) {
+                        if matches!(self.peek_kind(), TokenKind::RBracket) {
+                            break; // trailing comma
+                        }
+                        let k = self.parse_expr(0)?;
+                        self.expect(TokenKind::FatArrow, "`=>`")?;
+                        let v = self.parse_expr(0)?;
+                        pairs.push((k, v));
+                    }
+                    let close = self.expect(TokenKind::RBracket, "`]`")?;
+                    let span = tok.span.join(close.span);
+                    Some(Expr {
+                        kind: ExprKind::MapLit(pairs),
+                        span,
+                        ty: Type::Unknown,
+                    })
+                } else {
+                    let mut elems: Vec<Expr> = vec![first];
+                    while self.eat(TokenKind::Comma) {
+                        if matches!(self.peek_kind(), TokenKind::RBracket) {
+                            break; // trailing comma
+                        }
+                        elems.push(self.parse_expr(0)?);
+                    }
+                    let close = self.expect(TokenKind::RBracket, "`]`")?;
+                    let span = tok.span.join(close.span);
+                    Some(Expr {
+                        kind: ExprKind::ArrayLit(elems),
+                        span,
+                        ty: Type::Unknown,
+                    })
+                }
+            }
             TokenKind::LBrace => {
                 let b = self.parse_block()?;
                 let span = b.span;
@@ -891,6 +968,31 @@ fn print_expr(out: &mut String, e: &Expr) {
                 print_expr(out, fv);
             }
             out.push_str(" }");
+        }
+        ExprKind::ArrayLit(elems) => {
+            out.push('[');
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                print_expr(out, e);
+            }
+            out.push(']');
+        }
+        ExprKind::MapLit(pairs) => {
+            out.push('[');
+            if pairs.is_empty() {
+                out.push(':');
+            }
+            for (i, (k, v)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                print_expr(out, k);
+                out.push_str(" => ");
+                print_expr(out, v);
+            }
+            out.push(']');
         }
         ExprKind::Closure(ps, body) => {
             out.push('|');

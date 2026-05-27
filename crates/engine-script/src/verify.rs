@@ -304,7 +304,24 @@ fn verify_function(
                     check_reg(&f.name, pc, code[pc + 2], max_reg)?;
                 }
             }
-            Opcode::StructGet | Opcode::StructSet => {
+            Opcode::StructGet => {
+                // Layout: `dst:u8 strct:u8 name_ki:u16le` (dispatcher
+                // reads pc+1=dst, pc+2=strct, pc+3..pc+5=name_ki).
+                check_reg(&f.name, pc, code[pc + 1], max_reg)?;
+                check_reg(&f.name, pc, code[pc + 2], max_reg)?;
+                let name_ki = u16::from_le_bytes([code[pc + 3], code[pc + 4]]);
+                if name_ki >= const_max {
+                    return Err(VerifyError::OutOfBoundsConst {
+                        function: f.name.clone(),
+                        pc,
+                        idx: name_ki,
+                        max: const_max,
+                    });
+                }
+            }
+            Opcode::StructSet => {
+                // Layout: `strct:u8 name_ki:u16le src:u8` (dispatcher
+                // reads pc+1=strct, pc+2..pc+4=name_ki, pc+4=src).
                 check_reg(&f.name, pc, code[pc + 1], max_reg)?;
                 let name_ki = u16::from_le_bytes([code[pc + 2], code[pc + 3]]);
                 if name_ki >= const_max {

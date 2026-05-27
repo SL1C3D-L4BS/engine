@@ -304,6 +304,17 @@ impl PakSet {
         self.paks.push(pak);
     }
 
+    /// Unmounts the newest overlay and returns it, or `None` if the set
+    /// is empty (ADR-048 §Verification — pak_unmount_handle).
+    ///
+    /// After unmounting, lookups via [`PakSet::resolve`] fall through to
+    /// the next-newest mounted pak. The returned `Pak` carries the
+    /// underlying bytes; dropping it releases the storage without
+    /// touching any other mounted overlay's data.
+    pub fn unmount_last(&mut self) -> Option<Pak> {
+        self.paks.pop()
+    }
+
     /// Resolves `name` against the mounted paks, newest first.
     ///
     /// Returns `None` if no pak provides the name or it has been kill-switched.
@@ -435,5 +446,105 @@ mod tests {
         assert_eq!(set.resolve("broken.tex"), None);
         set.enable("broken.tex");
         assert!(set.resolve("broken.tex").is_some());
+    }
+
+    #[test]
+    fn unmount_handle_drops_overlay_assets() {
+        // ADR-048 §Verification: mount base + overlay, take a handle to
+        // the overlay-introduced asset, unmount the overlay, resolve
+        // again — the handle "becomes fallback" (resolves to the base
+        // value when the name still exists in the base, or `None` when
+        // it was overlay-exclusive).
+        let mut base = Pak::builder();
+        base.add("config.ron", b"base-v1".to_vec());
+        // No `extra.tex` in the base.
+
+        let mut overlay = Pak::builder();
+        overlay.add("config.ron", b"patched-v2".to_vec());
+        overlay.add("extra.tex", b"overlay-only".to_vec());
+
+        let mut set = PakSet::new();
+        set.mount(base.build());
+        set.mount(overlay.build());
+
+        // Both names resolve before unmount; overlay wins for shared
+        // names; overlay-exclusive names exist.
+        assert_eq!(set.resolve("config.ron"), Some(&b"patched-v2"[..]));
+        assert_eq!(set.resolve("extra.tex"), Some(&b"overlay-only"[..]));
+        assert_eq!(set.mounted_count(), 2);
+
+        // Unmount the overlay; the returned Pak still owns its bytes
+        // so the caller can inspect them, but the set no longer
+        // consults it.
+        let dropped = set.unmount_last().expect("overlay was mounted");
+        assert_eq!(set.mounted_count(), 1);
+        assert_eq!(dropped.get("config.ron"), Some(&b"patched-v2"[..]));
+
+        // After unmount: shared name falls back to base; overlay-
+        // exclusive name disappears.
+        assert_eq!(set.resolve("config.ron"), Some(&b"base-v1"[..]));
+        assert!(
+            set.resolve("extra.tex").is_none(),
+            "overlay-exclusive name must not be resolvable after unmount"
+        );
+
+        // Unmount the last pak: the set is empty.
+        let _ = set.unmount_last().expect("base was still mounted");
+        assert_eq!(set.mounted_count(), 0);
+        assert!(set.resolve("config.ron").is_none());
+        // Unmounting an empty set is a no-op (returns `None`).
+        assert!(set.unmount_last().is_none());
+    }
+
+    #[test]
+    fn dedupe_refcount_does_not_double_free() {
+        // ADR-048 §Verification: mount two paks whose entries share
+        // content bytes ("spirv-bytes"). Each pak dedupes its own
+        // internal blob storage (the `blob_count == 1` assertion below)
+        // — across paks, the bytes are duplicated, but unmount of one
+        // pak must not invalidate access to the surviving pak's copy.
+        let mut a = Pak::builder();
+        a.add("shaders/lit.spv", b"spirv-bytes".to_vec());
+        let pak_a = a.build();
+        assert_eq!(pak_a.blob_count(), 1);
+        assert_eq!(pak_a.entry_count(), 1);
+
+        let mut b = Pak::builder();
+        // Same content, different name; b's internal dedupe still
+        // collapses if its own entries share bytes.
+        b.add("shaders/alt.spv", b"spirv-bytes".to_vec());
+        b.add("shaders/copy.spv", b"spirv-bytes".to_vec());
+        let pak_b = b.build();
+        assert_eq!(pak_b.blob_count(), 1);
+        assert_eq!(pak_b.entry_count(), 2);
+        // The shared content hashes to the same key in both paks.
+        assert_eq!(
+            pak_a.hash_of("shaders/lit.spv"),
+            pak_b.hash_of("shaders/alt.spv"),
+            "content addressing is stable across paks"
+        );
+
+        let mut set = PakSet::new();
+        set.mount(pak_a);
+        set.mount(pak_b);
+
+        // All three names resolve to identical bytes.
+        assert_eq!(set.resolve("shaders/lit.spv"), Some(&b"spirv-bytes"[..]));
+        assert_eq!(set.resolve("shaders/alt.spv"), Some(&b"spirv-bytes"[..]));
+        assert_eq!(set.resolve("shaders/copy.spv"), Some(&b"spirv-bytes"[..]));
+
+        // Unmount b: a's bytes must survive (no double-free).
+        let dropped_b = set.unmount_last().expect("b was mounted");
+        drop(dropped_b);
+        assert_eq!(set.resolve("shaders/lit.spv"), Some(&b"spirv-bytes"[..]));
+        assert!(set.resolve("shaders/alt.spv").is_none());
+        assert!(set.resolve("shaders/copy.spv").is_none());
+
+        // Unmount a: now nothing resolves; dropping the returned Pak
+        // releases the bytes for good.
+        let dropped_a = set.unmount_last().expect("a was mounted");
+        drop(dropped_a);
+        assert!(set.resolve("shaders/lit.spv").is_none());
+        assert_eq!(set.mounted_count(), 0);
     }
 }

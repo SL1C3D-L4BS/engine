@@ -15,7 +15,8 @@
 //! the test corpus runs end-to-end.
 
 use crate::ast::{
-    BinOp, Block, Decl, Expr, ExprKind, FnDecl, Lit, Module as AstModule, Stmt, StmtKind, UnOp,
+    BinOp, Block, Decl, Expr, ExprKind, FnDecl, Lit, Module as AstModule, Param, Stmt, StmtKind,
+    Type, UnOp,
 };
 use crate::bytecode::{Const, FunctionBytecode, Module, ModuleBuilder, Opcode};
 use crate::source::{Source, Span};
@@ -328,10 +329,12 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
         }
         ExprKind::Call(callee, args) => {
             let arg_regs: Vec<u8> = args.iter().map(|a| compile_expr(c, a)).collect();
-            let dst = c.alloc_reg();
+            // Direct call: `Ident(name)` that resolves in the top-level
+            // function index. Emits the cheap `Call` opcode.
             if let ExprKind::Ident(name) = &callee.kind
                 && let Some(id) = c.fn_index.get(name)
             {
+                let dst = c.alloc_reg();
                 c.emit_at(Opcode::Call, e.span);
                 c.emit_byte(dst);
                 c.emit_u16(*id);
@@ -341,26 +344,160 @@ fn compile_expr(c: &mut Compiler, e: &Expr) -> u8 {
                 }
                 return dst;
             }
-            // Unknown name — emit nil for now. PR 3 will route this
-            // through the FFI table.
-            c.emit_at(Opcode::ConstNil, e.span);
+            // Local-bound callee: `Ident(name)` that resolves to a
+            // closure value in a register (e.g. `let f = |x| ...; f(3)`),
+            // or any non-Ident callee expression. Emits `CallClosure`.
+            let cls_reg = match &callee.kind {
+                ExprKind::Ident(name) => match c.lookup(name) {
+                    Some(r) => r,
+                    None => {
+                        // Unknown name — emit nil placeholder; PR 3 will
+                        // route this through the FFI table.
+                        let dst = c.alloc_reg();
+                        c.emit_at(Opcode::ConstNil, e.span);
+                        c.emit_byte(dst);
+                        return dst;
+                    }
+                },
+                _ => compile_expr(c, callee),
+            };
+            let dst = c.alloc_reg();
+            c.emit_at(Opcode::CallClosure, e.span);
             c.emit_byte(dst);
+            c.emit_byte(cls_reg);
+            c.emit_byte(arg_regs.len() as u8);
+            for r in &arg_regs {
+                c.emit_byte(*r);
+            }
             dst
         }
-        ExprKind::Field(_, _) | ExprKind::Index(_, _) | ExprKind::StructLit(_, _) => {
-            // Struct field access and literal construction are
-            // PR-3 work (need heap allocation through `Heap::alloc`).
-            // Lower to a nil placeholder; the type checker has already
-            // validated the shape statically.
+        ExprKind::ArrayLit(elems) => {
+            // ADR-060 ArrayNew packs all elements in one instruction:
+            // `dst:u8 n:u8 arg0..argN-1:u8`. Compile each element first
+            // (each gets its own register), then allocate the dst and
+            // emit. Empty array literal `[]` lowers to `ArrayNew dst 0`.
+            let arg_regs: Vec<u8> = elems.iter().map(|el| compile_expr(c, el)).collect();
             let dst = c.alloc_reg();
-            c.emit_at(Opcode::ConstNil, e.span);
+            c.emit_at(Opcode::ArrayNew, e.span);
             c.emit_byte(dst);
+            c.emit_byte(arg_regs.len() as u8);
+            for r in &arg_regs {
+                c.emit_byte(*r);
+            }
             dst
         }
-        ExprKind::Closure(_, _) => {
+        ExprKind::MapLit(pairs) => {
+            // ADR-060 MapNew + per-pair MapSet. The dispatcher's MapSet
+            // (dispatch.rs) fires `heap.write_barrier(map, value)` when
+            // crossing generations, so codegen does not insert barriers
+            // itself.
+            let pair_regs: Vec<(u8, u8)> = pairs
+                .iter()
+                .map(|(k, v)| (compile_expr(c, k), compile_expr(c, v)))
+                .collect();
             let dst = c.alloc_reg();
-            c.emit_at(Opcode::ConstNil, e.span);
+            c.emit_at(Opcode::MapNew, e.span);
             c.emit_byte(dst);
+            for (kreg, vreg) in &pair_regs {
+                c.emit_at(Opcode::MapSet, e.span);
+                c.emit_byte(dst);
+                c.emit_byte(*kreg);
+                c.emit_byte(*vreg);
+            }
+            dst
+        }
+        ExprKind::StructLit(_, fields) => {
+            // `StructNew dst` then per field `StructSet dst name_ki src`.
+            // Field names intern into the const pool's `Str` table; the
+            // dispatcher resolves them at runtime against the heap
+            // object's field map.
+            let field_regs: Vec<(String, u8)> = fields
+                .iter()
+                .map(|(fname, fexpr)| (fname.clone(), compile_expr(c, fexpr)))
+                .collect();
+            let dst = c.alloc_reg();
+            c.emit_at(Opcode::StructNew, e.span);
+            c.emit_byte(dst);
+            for (fname, vreg) in &field_regs {
+                let ki = c.builder.intern(Const::Str(fname.clone()));
+                c.emit_at(Opcode::StructSet, e.span);
+                c.emit_byte(dst);
+                c.emit_u16(ki);
+                c.emit_byte(*vreg);
+            }
+            dst
+        }
+        ExprKind::Field(rcv, name) => {
+            // `dst = rcv.<name>` — StructGet dst rreg name_ki:u16le.
+            let rreg = compile_expr(c, rcv);
+            let dst = c.alloc_reg();
+            let ki = c.builder.intern(Const::Str(name.clone()));
+            c.emit_at(Opcode::StructGet, e.span);
+            c.emit_byte(dst);
+            c.emit_byte(rreg);
+            c.emit_u16(ki);
+            dst
+        }
+        ExprKind::Index(rcv, idx) => {
+            // Branch on the receiver's type recorded by typeck. Array
+            // → ArrayGet; Map → MapGet; Error → nil fallback.
+            let rreg = compile_expr(c, rcv);
+            let ireg = compile_expr(c, idx);
+            let dst = c.alloc_reg();
+            let opcode = match &rcv.ty {
+                Type::Array(_) => Opcode::ArrayGet,
+                Type::Map(_, _) => Opcode::MapGet,
+                Type::Error => {
+                    // typeck flagged this; emit a nil so the verifier
+                    // doesn't blow up downstream.
+                    c.emit_at(Opcode::ConstNil, e.span);
+                    c.emit_byte(dst);
+                    return dst;
+                }
+                _ => {
+                    // Defensive: typeck normally catches non-container
+                    // indexing; emit nil.
+                    c.emit_at(Opcode::ConstNil, e.span);
+                    c.emit_byte(dst);
+                    return dst;
+                }
+            };
+            c.emit_at(opcode, e.span);
+            c.emit_byte(dst);
+            c.emit_byte(rreg);
+            c.emit_byte(ireg);
+            dst
+        }
+        ExprKind::Closure(params, body) => {
+            // Discover free variables in the closure body. Free variables
+            // are referenced by name; each maps to a register in the
+            // *enclosing* compiler's scope. We capture by value at
+            // ClosureMake time; the captured register byte is read into
+            // register-0..k of the callee frame at runtime.
+            let captures = collect_free_vars(body, params);
+            // Resolve each free variable to its outer register. Free
+            // variables that don't resolve (rare — typeck would have
+            // flagged them) drop out of the capture list.
+            let mut capture_regs: Vec<u8> = Vec::with_capacity(captures.len());
+            let mut resolved_names: Vec<String> = Vec::with_capacity(captures.len());
+            for name in &captures {
+                if let Some(r) = c.lookup(name) {
+                    capture_regs.push(r);
+                    resolved_names.push(name.clone());
+                }
+            }
+            // Compile the closure body as a fresh top-level function.
+            // The callee frame is laid out as `[captures.., params..]`,
+            // so we bind captures in registers 0..k and params in k..k+n.
+            let fn_idx = compile_closure_body(c, &resolved_names, params, body);
+            let dst = c.alloc_reg();
+            c.emit_at(Opcode::ClosureMake, e.span);
+            c.emit_byte(dst);
+            c.emit_u16(fn_idx);
+            c.emit_byte(capture_regs.len() as u8);
+            for r in &capture_regs {
+                c.emit_byte(*r);
+            }
             dst
         }
         ExprKind::Block(b) => compile_block(c, b).unwrap_or_else(|| {
@@ -434,4 +571,194 @@ fn binop_opcode(op: BinOp) -> Opcode {
         BinOp::And => Opcode::And,
         BinOp::Or => Opcode::Or,
     }
+}
+
+/// Discover free variables in a closure body, in source-position order.
+///
+/// A free variable is an `Ident` referenced inside the body that is not
+/// bound by:
+///   - the closure's own params, or
+///   - an inner `let` (block-scoped), or
+///   - an inner closure's params.
+///
+/// Returns each name once, in first-occurrence order. This drives the
+/// capture list emitted by [`Opcode::ClosureMake`]. The walker treats
+/// `ExprKind::Ident` as the only free-variable production — function
+/// calls by name (`fn_index` lookups) and built-ins resolve at the
+/// module level and are not captured.
+fn collect_free_vars(body: &Expr, params: &[Param]) -> Vec<String> {
+    let mut bound: Vec<Vec<String>> = vec![params.iter().map(|p| p.name.clone()).collect()];
+    let mut out: Vec<String> = Vec::new();
+    walk_free_vars(body, &mut bound, &mut out);
+    out
+}
+
+fn walk_free_vars(e: &Expr, bound: &mut Vec<Vec<String>>, out: &mut Vec<String>) {
+    match &e.kind {
+        ExprKind::Lit(_) => {}
+        ExprKind::Ident(name) => {
+            // Closure-bound? Function name? Then not free.
+            if bound.iter().any(|scope| scope.iter().any(|n| n == name))
+                || out.iter().any(|n| n == name)
+            {
+                return;
+            }
+            // Skip names registered as functions / constants at module
+            // scope — these are resolved at codegen time, not captured.
+            // We don't have access to fn_index here, so the conservative
+            // rule is "any unbound name is a candidate capture." The
+            // outer compiler's `lookup` filters: names that resolve to
+            // a local register get captured; names that don't (function
+            // / constant) get skipped silently in `compile_expr`.
+            out.push(name.clone());
+        }
+        ExprKind::Binary(_, l, r) => {
+            walk_free_vars(l, bound, out);
+            walk_free_vars(r, bound, out);
+        }
+        ExprKind::Unary(_, x) => walk_free_vars(x, bound, out),
+        ExprKind::Call(callee, args) => {
+            walk_free_vars(callee, bound, out);
+            for a in args {
+                walk_free_vars(a, bound, out);
+            }
+        }
+        ExprKind::Field(x, _) => walk_free_vars(x, bound, out),
+        ExprKind::Index(x, i) => {
+            walk_free_vars(x, bound, out);
+            walk_free_vars(i, bound, out);
+        }
+        ExprKind::StructLit(_, fields) => {
+            for (_, v) in fields {
+                walk_free_vars(v, bound, out);
+            }
+        }
+        ExprKind::ArrayLit(elems) => {
+            for el in elems {
+                walk_free_vars(el, bound, out);
+            }
+        }
+        ExprKind::MapLit(pairs) => {
+            for (k, v) in pairs {
+                walk_free_vars(k, bound, out);
+                walk_free_vars(v, bound, out);
+            }
+        }
+        ExprKind::Closure(inner_params, inner_body) => {
+            // Nested closure: its params shadow our scope; we continue
+            // collecting free vars from the inner body, accumulating
+            // through the existing `bound` stack.
+            bound.push(inner_params.iter().map(|p| p.name.clone()).collect());
+            walk_free_vars(inner_body, bound, out);
+            bound.pop();
+        }
+        ExprKind::Block(b) => walk_free_vars_block(b, bound, out),
+        ExprKind::If(c, t, el) => {
+            walk_free_vars(c, bound, out);
+            walk_free_vars_block(t, bound, out);
+            if let Some(el) = el {
+                walk_free_vars_block(el, bound, out);
+            }
+        }
+    }
+}
+
+fn walk_free_vars_block(b: &Block, bound: &mut Vec<Vec<String>>, out: &mut Vec<String>) {
+    // Each block opens a new lexical scope; inner `let` statements add
+    // to the scope; the scope dies with the block.
+    bound.push(Vec::new());
+    for s in &b.stmts {
+        match &s.kind {
+            StmtKind::Let { name, init, .. } => {
+                walk_free_vars(init, bound, out);
+                bound.last_mut().unwrap().push(name.clone());
+            }
+            StmtKind::Assign(target, value) => {
+                walk_free_vars(target, bound, out);
+                walk_free_vars(value, bound, out);
+            }
+            StmtKind::Expr(e) => walk_free_vars(e, bound, out),
+            StmtKind::Return(e) => {
+                if let Some(e) = e {
+                    walk_free_vars(e, bound, out);
+                }
+            }
+            StmtKind::While(cond, body) => {
+                walk_free_vars(cond, bound, out);
+                walk_free_vars_block(body, bound, out);
+            }
+            StmtKind::If(cond, t, el) => {
+                walk_free_vars(cond, bound, out);
+                walk_free_vars_block(t, bound, out);
+                if let Some(el) = el {
+                    walk_free_vars_block(el, bound, out);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        walk_free_vars(t, bound, out);
+    }
+    bound.pop();
+}
+
+/// Compile a closure body as a fresh top-level function. The callee
+/// frame's register layout is `[captures.., params..]` — registers
+/// `0..k` hold the captured values supplied by `ClosureMake`, and
+/// registers `k..k+n` hold the call arguments supplied by `CallClosure`.
+/// Returns the index of the pushed function in the module builder.
+fn compile_closure_body(
+    outer: &Compiler<'_>,
+    captures: &[String],
+    params: &[Param],
+    body: &Expr,
+) -> u16 {
+    // The closure-body compiler shares the outer module's builder so
+    // function-id allocations stay coherent (any recursive call inside
+    // the closure to a top-level fn resolves through the shared
+    // `fn_index`).
+    let fn_index = outer.fn_index;
+    let source = outer.source;
+    // Synthesise a unique name for the closure function; not user-
+    // visible but used for diagnostics.
+    let synth_name = format!("__closure_{}", outer.builder.function_count());
+    // We need a mutable borrow of `outer.builder` and a fresh Compiler.
+    // SAFETY: the outer Compiler does not concurrently use its builder
+    // inside this function's lifetime — `compile_expr` returns control
+    // once it has resolved the closure subtree, and `ClosureMake` is
+    // emitted *after* this call returns.
+    let builder: &mut ModuleBuilder = unsafe {
+        // `outer` is &Compiler; `builder` is &mut inside it. We can't
+        // hold two &mut references at once safely from a single Rust
+        // type-system view, so this is the one carve-out. The pattern
+        // mirrors the parent codegen's recursive `compile_fn`-on-
+        // sub-AST style; revisit when the codegen acquires a proper
+        // reborrowable arena.
+        &mut *(outer.builder as *const ModuleBuilder as *mut ModuleBuilder)
+    };
+    let mut inner = Compiler::new(builder, fn_index, source);
+    // Register layout: captures first, then params.
+    for cap_name in captures {
+        let r = inner.alloc_reg();
+        inner.bind(cap_name.clone(), r);
+    }
+    for p in params {
+        let r = inner.alloc_reg();
+        inner.bind(p.name.clone(), r);
+    }
+    // Compile body and emit a return for the produced value.
+    let body_reg = compile_expr(&mut inner, body);
+    inner.emit_at(Opcode::ReturnVal, body.span);
+    inner.emit_byte(body_reg);
+    let bc = FunctionBytecode {
+        name: synth_name,
+        arity: (captures.len() + params.len()) as u8,
+        max_register: inner.next_reg.min(256) as u8,
+        code: inner.code,
+        line_for_pc: inner.line_for_pc,
+    };
+    let fn_idx = builder.function_count();
+    builder.push_function(bc);
+    fn_idx as u16
 }

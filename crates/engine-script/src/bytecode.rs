@@ -337,6 +337,12 @@ impl ModuleBuilder {
         id
     }
 
+    /// Number of functions pushed so far. Used by codegen to allocate
+    /// synthesised names for closure bodies (ADR-060).
+    pub fn function_count(&self) -> u16 {
+        self.module.functions.len() as u16
+    }
+
     /// Finalises the module.
     pub fn build(self) -> Module {
         self.module

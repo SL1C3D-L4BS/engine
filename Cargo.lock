@@ -401,6 +401,7 @@ version = "0.0.0"
 name = "engine-bench-frame-pacing"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "engine-math",
  "engine-raster",
  "engine-render",

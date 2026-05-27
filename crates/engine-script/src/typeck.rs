@@ -476,6 +476,96 @@ impl<'a> Checker<'a> {
                     Type::Error
                 }
             },
+            ExprKind::ArrayLit(elems) => {
+                // Inference: the first element's type pins the array's
+                // element type; subsequent elements must unify. Empty
+                // `[]` falls back to the hint (e.g. from `let xs: Array<i32> = [];`),
+                // otherwise `Type::Error` with a diagnostic.
+                let span = e.span;
+                let elem_hint: Option<&Type> = match hint {
+                    Some(Type::Array(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                if elems.is_empty() {
+                    match elem_hint {
+                        Some(t) => Type::Array(Box::new(t.clone())),
+                        None => {
+                            self.diags.emit(Diagnostic::error(
+                                span,
+                                "empty array literal `[]` requires a type annotation".to_string(),
+                            ));
+                            Type::Error
+                        }
+                    }
+                } else {
+                    let first_ty = self.check_expr_hinted(&mut elems[0], elem_hint);
+                    let element_ty = first_ty.clone();
+                    for el in elems.iter_mut().skip(1) {
+                        let t = self.check_expr_hinted(el, Some(&element_ty));
+                        if !unifies(&t, &element_ty) {
+                            self.diags.emit(Diagnostic::error(
+                                el.span,
+                                format!(
+                                    "array element expected `{}`, found `{}`",
+                                    fmt_type(&element_ty),
+                                    fmt_type(&t)
+                                ),
+                            ));
+                        }
+                    }
+                    Type::Array(Box::new(element_ty))
+                }
+            }
+            ExprKind::MapLit(pairs) => {
+                let span = e.span;
+                let (k_hint, v_hint): (Option<&Type>, Option<&Type>) = match hint {
+                    Some(Type::Map(k, v)) => (Some(k.as_ref()), Some(v.as_ref())),
+                    _ => (None, None),
+                };
+                if pairs.is_empty() {
+                    match (k_hint, v_hint) {
+                        (Some(k), Some(v)) => {
+                            Type::Map(Box::new(k.clone()), Box::new(v.clone()))
+                        }
+                        _ => {
+                            self.diags.emit(Diagnostic::error(
+                                span,
+                                "empty map literal `[:]` requires a type annotation".to_string(),
+                            ));
+                            Type::Error
+                        }
+                    }
+                } else {
+                    let (first_k, first_v) = pairs.split_first_mut().unwrap();
+                    let key_ty = self.check_expr_hinted(&mut first_k.0, k_hint);
+                    let val_ty = self.check_expr_hinted(&mut first_k.1, v_hint);
+                    for (k, v) in first_v.iter_mut() {
+                        let kt = self.check_expr_hinted(k, Some(&key_ty));
+                        if !unifies(&kt, &key_ty) {
+                            self.diags.emit(Diagnostic::error(
+                                k.span,
+                                format!(
+                                    "map key expected `{}`, found `{}`",
+                                    fmt_type(&key_ty),
+                                    fmt_type(&kt)
+                                ),
+                            ));
+                        }
+                        let vt = self.check_expr_hinted(v, Some(&val_ty));
+                        if !unifies(&vt, &val_ty) {
+                            self.diags.emit(Diagnostic::error(
+                                v.span,
+                                format!(
+                                    "map value expected `{}`, found `{}`",
+                                    fmt_type(&val_ty),
+                                    fmt_type(&vt)
+                                ),
+                            ));
+                        }
+                    }
+                    Type::Map(Box::new(key_ty), Box::new(val_ty))
+                }
+            }
             ExprKind::Closure(ps, body) => {
                 self.locals.push(HashMap::new());
                 for p in ps.iter() {

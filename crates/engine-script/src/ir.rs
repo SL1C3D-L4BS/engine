@@ -322,6 +322,27 @@ fn lower_expr(e: &Expr, lo: &mut Lowering, env: &mut LocalEnv) -> IrReg {
             lo.emit(IrInst::Const(dst, IrConst::Nil));
             dst
         }
+        ExprKind::ArrayLit(elems) => {
+            // SSA IR is used for the const-fold / CSE / DCE pre-codegen
+            // passes; aggregate types are opaque at this layer and the
+            // result is a Nil-typed handle. Real bytecode emission for
+            // ArrayLit lives in `codegen.rs` (ADR-060 wiring).
+            for el in elems {
+                let _ = lower_expr(el, lo, env);
+            }
+            let dst = lo.fresh();
+            lo.emit(IrInst::Const(dst, IrConst::Nil));
+            dst
+        }
+        ExprKind::MapLit(pairs) => {
+            for (k, v) in pairs {
+                let _ = lower_expr(k, lo, env);
+                let _ = lower_expr(v, lo, env);
+            }
+            let dst = lo.fresh();
+            lo.emit(IrInst::Const(dst, IrConst::Nil));
+            dst
+        }
         ExprKind::Closure(_, _) => {
             let dst = lo.fresh();
             lo.emit(IrInst::Const(dst, IrConst::Nil));

@@ -244,6 +244,46 @@ fn main() -> i64 {
 }
 "#,
         },
+        // ADR-060 aggregate-ops codegen fixtures. The opcodes 0x70-0x7B
+        // landed in Phase 5 PR 6; codegen for the AST shapes
+        // ArrayLit / MapLit / StructLit / Field / Index / Closure was
+        // wired in the same commit. The compile-parity golden takes a
+        // digest over the IR text — these fixtures pin that text.
+        Fixture {
+            name: "21_array_literal",
+            source: r#"
+fn main() -> i64 {
+    let xs: Array<i64> = [10, 20, 30];
+    return xs[0] + xs[1] + xs[2];
+}
+"#,
+        },
+        Fixture {
+            name: "22_array_indexing",
+            source: r#"
+fn at(xs: Array<i64>, i: i64) -> i64 {
+    return xs[i];
+}
+"#,
+        },
+        Fixture {
+            name: "23_map_literal",
+            source: r#"
+fn main() -> i64 {
+    let m: Map<str, i64> = ["a" => 1, "b" => 2, "c" => 3];
+    return m["a"] + m["b"] + m["c"];
+}
+"#,
+        },
+        Fixture {
+            name: "24_closure_with_capture",
+            source: r#"
+fn make_adder(k: i64) -> fn(i64) -> i64 {
+    let f = |x: i64| x + k;
+    return f;
+}
+"#,
+        },
     ];
     v.sort_by_key(|f| f.name);
     v

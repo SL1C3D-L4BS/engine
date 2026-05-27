@@ -177,6 +177,17 @@ fn walk_expr(e: &Expr, env: &mut LocalEnv, res: &Resolution, diags: &mut Diagnos
                 walk_expr(v, env, res, diags);
             }
         }
+        ExprKind::ArrayLit(elems) => {
+            for el in elems {
+                walk_expr(el, env, res, diags);
+            }
+        }
+        ExprKind::MapLit(pairs) => {
+            for (k, v) in pairs {
+                walk_expr(k, env, res, diags);
+                walk_expr(v, env, res, diags);
+            }
+        }
         ExprKind::Closure(ps, body) => {
             env.push();
             for p in ps {

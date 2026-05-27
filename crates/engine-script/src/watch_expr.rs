@@ -153,6 +153,19 @@ pub fn verify_pure(expr: &Expr) -> Result<(), WatchError> {
             }
             Ok(())
         }
+        ExprKind::ArrayLit(elems) => {
+            for el in elems {
+                verify_pure(el)?;
+            }
+            Ok(())
+        }
+        ExprKind::MapLit(pairs) => {
+            for (k, v) in pairs {
+                verify_pure(k)?;
+                verify_pure(v)?;
+            }
+            Ok(())
+        }
         ExprKind::Closure(_, _) => Err(WatchError::Impure {
             reason: "closures are not allowed in watch expressions".into(),
         }),

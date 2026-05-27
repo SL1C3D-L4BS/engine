@@ -149,6 +149,14 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
     /// `TyName { field: expr, ... }`
     StructLit(String, Vec<(String, Expr)>),
+    /// `[e1, e2, ...]` — array literal (homogeneous, type inferred from
+    /// the first element). Empty `[]` requires an outer type annotation
+    /// (e.g. `let xs: Array<i32> = [];`).
+    ArrayLit(Vec<Expr>),
+    /// `[k1 => v1, k2 => v2, ...]` — map literal (homogeneous keys +
+    /// values, types inferred from the first pair). Empty `[:]`
+    /// requires an outer type annotation.
+    MapLit(Vec<(Expr, Expr)>),
     /// `|p1, p2| body`
     Closure(Vec<Param>, Box<Expr>),
     /// A braced block as an expression. The block's tail value (if any)

@@ -25,7 +25,24 @@ spec_version = "2.0"
 # wrapper (ADR-049) are scoped per ADR-053's 6-PR slicing plan. Upper
 # layers (physics, audio, net, ai, editor, hub, ui, api, plugin-api)
 # remain stubs for their respective phases.
-phase = "4-audited"
+#
+# Phase 5 (RENDERING FOUNDATION, Track A) closed 2026-05-27. Six PRs:
+# (1) software rasterizer + render-graph trait surface + pixel-parity
+# oracle (ADR-039 + ADR-046); (2) owned `engine-gpu` wgpu wrapper +
+# bindless heap + BC{4,5,7} import (ADR-049 + ADR-044 + ADR-045);
+# (3) deferred G-buffer + cluster lights + CSM (ADR-040 + ADR-043);
+# (4) IBL L2 SH probes + post-FX chain (SSAO, bloom, tonemap, TAA per
+# ADR-041 + ADR-042); (5) UpscalerProvider trait surface with vendor
+# stubs (DLSS/FSR/XeSS pending Phase 6) + OwnedBilinear placeholder +
+# the RX-580 milestone bench (ADR-005); (6) frame-pacing CI gate
+# scaffolded as informational (ADR-016 + ADR-047 — promoted to
+# required when the self-hosted RX 6700 XT runner is provisioned per
+# `docs/runbooks/frame-pacing-runner.md`). PR-6 also closed two
+# audit follow-ups: the full ADR-060 sli aggregate-ops codegen
+# surface (ArrayLit / MapLit syntax + Field / Index / StructLit /
+# Closure codegen wiring) and the missing ADR-048 pak overlay tests.
+# Engine Core v0.2 is the Phase-5 milestone tag.
+phase = "5"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

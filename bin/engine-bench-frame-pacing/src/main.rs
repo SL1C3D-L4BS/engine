@@ -31,6 +31,7 @@
 mod bench;
 mod budgets;
 mod json;
+mod scene;
 mod stats;
 
 use std::path::PathBuf;
@@ -58,6 +59,17 @@ struct RunOpts {
     input_extent: [u32; 2],
     output_extent: [u32; 2],
     output: Option<PathBuf>,
+    /// Set when `--scene PATH` is given. The bench loads + hashes +
+    /// parses the file; the parsed `Scene` overrides extents and frame
+    /// count, and the scene hash is included in the JSON report.
+    scene: Option<SceneInputs>,
+}
+
+#[derive(Debug)]
+struct SceneInputs {
+    path: PathBuf,
+    hash_hex: String,
+    parsed: scene::Scene,
 }
 
 impl Default for RunOpts {
@@ -73,6 +85,7 @@ impl Default for RunOpts {
                 engine_raster::MILESTONE_OUTPUT_HEIGHT,
             ],
             output: None,
+            scene: None,
         }
     }
 }
@@ -91,11 +104,15 @@ const USAGE: &str = "\
 engine-bench-frame-pacing — Phase-5 milestone + ADR-047 frame-pacing bench
 
 USAGE:
-    engine-bench-frame-pacing --run [--frames N] [--input WxH] [--output WxH] [--output-path PATH]
+    engine-bench-frame-pacing --run [--scene PATH] [--frames N] [--input WxH] [--output WxH] [--output-path PATH]
     engine-bench-frame-pacing --gate <REPORT.json> [--budgets PATH] [--p99 MS] [--stddev MS]
     engine-bench-frame-pacing --help
 
 RUN OPTIONS:
+    --scene PATH         Load the deterministic scene fixture (RON, ADR-047 §1).
+                         Sets frames + extents from the file. --frames /
+                         --input / --output override per-flag if also given.
+                         The scene's BLAKE3 hash is recorded in the report.
     --frames N           Frames to measure (default 60).
     --input WxH          Internal render resolution (default 1280x720).
     --output WxH         Display resolution (default 2560x1440).
@@ -179,6 +196,26 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
                 budgets_path = Some(PathBuf::from(v));
                 i += 1;
             }
+            "--scene" => {
+                let v = argv
+                    .get(i + 1)
+                    .ok_or_else(|| "--scene requires a path argument".to_string())?;
+                let path = PathBuf::from(v);
+                let body = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("--scene: read {path:?}: {e}"))?;
+                let parsed = scene::parse(&body)
+                    .map_err(|e| format!("--scene: parse {path:?}: {e}"))?;
+                let hash_hex = scene::scene_hash_hex(body.as_bytes());
+                run_opts.frames = parsed.frames;
+                run_opts.input_extent = parsed.internal_extent;
+                run_opts.output_extent = parsed.output_extent;
+                run_opts.scene = Some(SceneInputs {
+                    path,
+                    hash_hex,
+                    parsed,
+                });
+                i += 1;
+            }
             "--frames" => {
                 let v = argv
                     .get(i + 1)
@@ -238,6 +275,9 @@ fn parse_args(argv: &[String]) -> Result<Mode, String> {
             }
             Ok(Mode::Run(run_opts))
         }
+        Some("gate") if run_opts.scene.is_some() => {
+            Err("--scene is only valid with --run".into())
+        }
         Some("gate") => {
             // Resolution: file < explicit flag < spec default. Start at
             // the spec defaults; overlay the file if present; overlay
@@ -290,7 +330,7 @@ fn run(opts: RunOpts) -> Result<(), String> {
         output_extent: opts.output_extent,
     };
     let report = run_scenario(&scenario).map_err(|e| e.to_string())?;
-    let json = serialize_report(&report);
+    let json = serialize_report(&report, opts.scene.as_ref());
     match opts.output {
         Some(path) => std::fs::write(&path, &json).map_err(|e| format!("write {path:?}: {e}"))?,
         None => println!("{json}"),
@@ -320,12 +360,18 @@ fn gate(opts: GateOpts) -> Result<String, String> {
     ))
 }
 
-fn serialize_report(report: &ScenarioReport) -> String {
+fn serialize_report(report: &ScenarioReport, scene: Option<&SceneInputs>) -> String {
     let mut w = json::JsonWriter::new();
     w.begin_object();
     w.field_str("scenario", "phase-5-milestone-cpu-oracle");
     w.field_str("adr", "ADR-005 + ADR-047");
     w.field_str("upscaler", "owned.bilinear");
+    if let Some(s) = scene {
+        w.field_str("scene_path", &s.path.to_string_lossy());
+        w.field_str("scene_hash", &s.hash_hex);
+        w.field_str("scene_quality", &s.parsed.quality);
+        w.field_u64("scene_target_fps", s.parsed.target_fps as u64);
+    }
     w.field_u64("frames", report.frame_times_ns.len() as u64);
     w.field_array_u32_2("input_extent", report.input_extent);
     w.field_array_u32_2("output_extent", report.output_extent);
@@ -517,7 +563,7 @@ mod tests {
             min_ms: 1.0,
             max_ms: 4.0,
         };
-        let s = serialize_report(&report);
+        let s = serialize_report(&report, None);
         let p99 = json::read_top_level_number(&s, "p99_ms").unwrap();
         let stddev = json::read_top_level_number(&s, "stddev_ms").unwrap();
         // p99 of [1, 2, 3, 4] ms = 4 ms (highest sample at the ≥99%
@@ -532,5 +578,96 @@ mod tests {
         // Contains the canonical scenario tag.
         assert!(s.contains("\"scenario\":\"phase-5-milestone-cpu-oracle\""));
         assert!(s.contains("\"upscaler\":\"owned.bilinear\""));
+        // No scene fields when no scene was loaded.
+        assert!(!s.contains("\"scene_hash\""));
+    }
+
+    #[test]
+    fn serialize_report_with_scene_emits_hash_and_path() {
+        let report = ScenarioReport {
+            frame_times_ns: vec![1_000_000, 2_000_000],
+            input_extent: [1280, 720],
+            output_extent: [2560, 1440],
+            mean_ms: 1.5,
+            min_ms: 1.0,
+            max_ms: 2.0,
+        };
+        let scene_inputs = SceneInputs {
+            path: PathBuf::from("/tmp/test-scene.ron"),
+            hash_hex: "abc123".to_string(),
+            parsed: scene::Scene {
+                seed: 0,
+                frames: 3600,
+                entities: 10000,
+                unique_meshes: 50,
+                directional_lights: 16,
+                point_spot_lights: 48,
+                camera_seed: 0,
+                quality: "rx-580".to_string(),
+                target_fps: 60,
+                internal_extent: [1280, 720],
+                output_extent: [2560, 1440],
+            },
+        };
+        let s = serialize_report(&report, Some(&scene_inputs));
+        assert!(s.contains("\"scene_path\":\"/tmp/test-scene.ron\""));
+        assert!(s.contains("\"scene_hash\":\"abc123\""));
+        assert!(s.contains("\"scene_quality\":\"rx-580\""));
+        assert!(s.contains("\"scene_target_fps\":60"));
+    }
+
+    #[test]
+    fn parse_args_run_with_canonical_scene_loads_extents() {
+        let canonical = "testbed/frame-pacing/scenes/v0.ron";
+        // Cargo runs tests from the workspace root.
+        if !std::path::Path::new(canonical).exists() {
+            // Not running from workspace root — skip without panicking.
+            return;
+        }
+        let m = parse_args(&["--run".into(), "--scene".into(), canonical.into()]).unwrap();
+        let Mode::Run(o) = m else {
+            panic!("expected Run")
+        };
+        // Scene parameters override defaults.
+        assert_eq!(o.frames, 3600);
+        assert_eq!(o.input_extent, [1280, 720]);
+        assert_eq!(o.output_extent, [2560, 1440]);
+        let scene = o.scene.expect("scene loaded");
+        assert_eq!(scene.path, PathBuf::from(canonical));
+        assert_eq!(scene.hash_hex.len(), 64);
+        assert_eq!(scene.parsed.quality, "rx-580");
+    }
+
+    #[test]
+    fn parse_args_scene_with_gate_is_an_error() {
+        // Write a minimal v0.ron to a temp path.
+        let dir = std::env::temp_dir();
+        let path = dir.join("engine-bench-test-scene-gate-error.ron");
+        std::fs::write(
+            &path,
+            r#"FramePacingScene(
+    seed: 0,
+    frames: 60,
+    entities: 1,
+    unique_meshes: 1,
+    directional_lights: 0,
+    point_spot_lights: 0,
+    camera_seed: 0,
+    quality: "test",
+    target_fps: 60,
+    internal_extent: (640, 360),
+    output_extent: (1280, 720),
+)"#,
+        )
+        .unwrap();
+        let err = parse_args(&[
+            "--gate".into(),
+            "report.json".into(),
+            "--scene".into(),
+            path.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("--scene"));
+        std::fs::remove_file(&path).ok();
     }
 }
