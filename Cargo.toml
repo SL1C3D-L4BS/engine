@@ -45,6 +45,13 @@ engine-ui = { path = "crates/engine-ui" }
 engine-api = { path = "crates/engine-api" }
 engine-plugin-api = { path = "crates/engine-plugin-api" }
 
+# The Slang toolchain ships both a binary and a library; engine-render
+# consumes the library half (`Bundle`, `Artifact`, `Target`) so the
+# renderer can build engine_gpu pipelines from artefacts the
+# pre-build step (tools/engine-shader binary) emits. Tool stays in
+# tools/ — there is one path entry for both consumers.
+engine-shader = { path = "tools/engine-shader" }
+
 # --- third-party deps are added here as phases require them ---
 
 # Benchmarking. Dev-only — no engine code links to it (Phase 1, ADR-026).

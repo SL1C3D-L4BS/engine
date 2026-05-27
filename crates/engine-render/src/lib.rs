@@ -47,6 +47,19 @@
 //! [`resources::TonemappedColor`]. CPU oracles live in
 //! `engine_raster::ibl` and `engine_raster::post_fx`.
 //!
+//! ## Phase 6 PR 2 status
+//!
+//! The shader-artefact ingest + pipeline-construction layer
+//! ([`shader`]) lands per ADR-063. [`ShaderArtefactSet`] wraps a
+//! Slang [`engine_shader::Bundle`] and selects the per-device
+//! artefact (WGSL today; widens to SPIR-V/DXIL/MSL when native
+//! backends land). Helpers [`build_render_pipeline`] and
+//! [`build_compute_pipeline`] assemble `engine_gpu::RenderPipeline`
+//! / `ComputePipeline` from a vertex+fragment or compute
+//! [`ShaderArtefactSet`]. PR 2 ships the trait surface; PR 3 wires
+//! it into the 5 geometry/lighting pass `record()` bodies + lands
+//! the first concrete Slang shader sources.
+//!
 //! ## Phase 5 PR 5 status
 //!
 //! The upscaler trait surface (ADR-005) lands in [`upscale`]:
@@ -65,6 +78,7 @@
 pub mod passes;
 pub mod render_graph;
 pub mod resources;
+pub mod shader;
 pub mod upscale;
 
 pub use engine_gpu as gpu;
@@ -80,6 +94,10 @@ pub use resources::{
     GBufferNormalMetallic, IblProbeSet, IndirectDrawBuffer, LightSsbo, LitColor, RenderQueue,
     ShadowAtlas, ShadowCasters, SsaoTexture, TaaHistory, TaaResolvedColor, TonemappedColor,
     UpscaledColor,
+};
+pub use shader::{
+    ComputePipelineHelperDesc, RenderPipelineHelperDesc, ShaderArtefactSet, ShaderError,
+    build_compute_pipeline, build_render_pipeline, empty_bind_group_layout,
 };
 pub use upscale::{
     OwnedBilinear, SelectionLogger, UpscaleCtx, UpscaleError, UpscaleResult, UpscalerKind,

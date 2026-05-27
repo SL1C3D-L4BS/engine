@@ -546,6 +546,7 @@ name = "engine-render"
 version = "0.0.0"
 dependencies = [
  "engine-gpu",
+ "engine-shader",
 ]
 
 [[package]]
