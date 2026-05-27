@@ -8,5 +8,13 @@ rust-version.workspace = true
 [dependencies]
 engine-math = { workspace = true }
 
+# engine-render is a dev-dep so that integration tests in
+# `tests/rendering_contracts.rs` can cross-check engine-render's
+# GPU-side contract constants (Phase 6 PR 3, ADR-064 + ADR-065)
+# against this testbed's CPU oracle constants. Keeping it dev-only
+# preserves the runtime-independent character of the oracle.
+[dev-dependencies]
+engine-render = { workspace = true }
+
 [lints]
 workspace = true

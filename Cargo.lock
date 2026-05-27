@@ -532,6 +532,7 @@ name = "engine-raster"
 version = "0.0.0"
 dependencies = [
  "engine-math",
+ "engine-render",
 ]
 
 [[package]]

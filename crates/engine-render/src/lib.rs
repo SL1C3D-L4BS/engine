@@ -75,6 +75,7 @@
 //! `bin/engine-bench-frame-pacing/` drives the end-to-end PR-5 path
 //! (ADR-047 §7 informational mode; the gate activates in PR 6).
 
+pub mod contracts;
 pub mod passes;
 pub mod render_graph;
 pub mod resources;
