@@ -1,0 +1,24 @@
+[package]
+name = "streamline-sys"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0 AND LicenseRef-NVIDIA-Streamline"
+rust-version.workspace = true
+
+description = """
+Bindgen-generated FFI bindings to NVIDIA Streamline 2.x SDK (DLSS
+Super Resolution / DLAA / Reflex). Vendored under
+tools/upscaler-vendor-sdks/streamline/sl/ — see the runbook for the
+SDK fetch + digest-verify procedure (ADR-079).
+
+This crate is *not* a workspace member. Activate via the `dlss`
+cargo feature on `engine-upscale-vendor`; the consuming crate
+declares this as an optional dep.
+"""
+
+[lib]
+name = "streamline_sys"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

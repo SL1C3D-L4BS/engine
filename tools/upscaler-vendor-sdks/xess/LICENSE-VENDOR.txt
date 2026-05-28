@@ -1,0 +1,11 @@
+Intel XeSS 2 SDK License (MIT)
+
+Placeholder for the vendored Intel XeSS 2 SDK. Fetched per
+docs/runbooks/vendor-upscaler-sdks.md.
+
+Intel XeSS 2 source release:
+  https://github.com/intel/xess
+
+Per ADR-079 §1 the XeSS path supports both XMX (Arc B+) and DP4a
+(cross-vendor). The `xess` cargo feature on `engine-upscale-vendor`
+activates the runtime; `supports()` reports which sub-path is live.

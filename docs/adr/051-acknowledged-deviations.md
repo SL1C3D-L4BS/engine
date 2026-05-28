@@ -148,7 +148,84 @@ engine-i18n to ICU4X) becomes a new entry that supersedes the prior.
   Git-LFS tracked) is content separate from this code change;
   the runtime + cascade are content-agnostic and degrade gracefully.
 
-### 5. Format for adding new entries
+### 5. Deviation: NVIDIA Streamline 2.x SDK (DLSS / DLAA / Reflex)
+
+- **Spec:** §IV.4.A spec line 1635–1636 names DLSS 4 integration as
+  the Phase-6 vendor-upscaler deliverable. Spec R-02 prefers owned
+  subsystems but acknowledges vendor SDKs at the upscaler boundary.
+- **As shipped:** ADR-079 §1 specifies the
+  `tools/upscaler-vendor-sdks/streamline/` vendor sandbox + the
+  `streamline-sys` bindgen wrapper. The `dlss` cargo feature on
+  `engine-upscale-vendor` activates the binding; the baseline
+  workspace build links no NVIDIA code.
+- **Why:** the spec milestone names DLSS 4 integration; the SDK is
+  the only path to NVIDIA's tensor-accelerated upscaler. Owning the
+  trait surface (`UpscalerProvider`) while consuming the SDK matches
+  ADR-025's vendoring discipline applied to upscalers.
+- **Why it's safe:** NVIDIA's Streamline source is permissively
+  distributed (a permissive EULA on source distribution; the
+  runtime DLL ships with the user's driver). The vendor sandbox
+  carries a `LICENSE-VENDOR.txt` + `BLAKE3.txt` digest manifest;
+  the build script verifies the digest before linking. The
+  default-build CI never links NVIDIA-licensed code. The loader-thread
+  sandbox (ADR-079 §4) crashes-isolate the SDK from the renderer.
+- **Gate condition under which to revisit:** when NVIDIA either
+  opens the runtime as a freely-redistributable library or
+  publishes the DLSS algorithm spec so a Burn-or-wgpu owned
+  implementation becomes viable. Estimated trigger: indefinite —
+  the runtime is highly proprietary today.
+- **Acknowledged:** 2026-05-28 (ADR-051 amendment 5 / ADR-079).
+  Implementation status: scaffold landed Phase 6 PR 3; SDK fetch +
+  bindgen-generated bindings ship per the runbook on opt-in.
+
+### 6. Deviation: AMD FidelityFX FSR 4 SDK
+
+- **Spec:** §IV.4.A spec line 1635 names FSR 4 integration as
+  Phase-6 vendor-upscaler deliverable.
+- **As shipped:** ADR-079 §1 specifies the
+  `tools/upscaler-vendor-sdks/fsr/` vendor sandbox + the `fsr4-sys`
+  bindgen wrapper. The `fsr` cargo feature activates the
+  tensor-accelerated FSR 4 path on RDNA 4 hardware; the in-tree
+  EASU spatial fallback (ADR-076) runs on every other host.
+- **Why:** FSR 4's RDNA-4 tensor path is the highest-quality
+  vendor-upscaler choice on AMD hardware; the SDK is the only
+  reasonable integration path. The in-tree EASU shader
+  (`crates/engine-render/shaders/fsr_easu.wgsl`) ships
+  unconditionally per ADR-076 step 2.
+- **Why it's safe:** AMD FidelityFX SDK is MIT-licensed end-to-end;
+  the entire `ffx-sdk/` tree is vendored under
+  `tools/upscaler-vendor-sdks/fsr/` and verifiable on a clean
+  checkout. No license-exception entries in `deny.toml` beyond
+  the existing MIT allow.
+- **Gate condition under which to revisit:** when FSR 4's algorithm
+  becomes implementable from the published whitepaper without the
+  SDK (i.e. when the WGSL compute-shader feature surface gains
+  INT8 matmul and the algorithm spec is fully public).
+- **Acknowledged:** 2026-05-28 (ADR-051 amendment 6 / ADR-079).
+  Implementation status: scaffold landed Phase 6 PR 3; SDK clone +
+  bindgen-generated bindings on opt-in per runbook.
+
+### 7. Deviation: Intel XeSS 2 SDK
+
+- **Spec:** §IV.4.A spec line 1635 names XeSS 2 integration as
+  Phase-6 vendor-upscaler deliverable.
+- **As shipped:** ADR-079 §1 specifies the
+  `tools/upscaler-vendor-sdks/xess/` vendor sandbox + the
+  `xess2-sys` bindgen wrapper. The `xess` cargo feature activates
+  both the XMX-accelerated path (Arc B+) and the cross-vendor
+  DP4a fallback; `VendorXess::supports()` queries each at runtime.
+- **Why:** XeSS 2 is the highest-quality vendor-upscaler choice on
+  Intel Arc hardware; the DP4a path provides cross-vendor coverage
+  on most NVIDIA Turing+ and AMD RDNA+ GPUs.
+- **Why it's safe:** Intel XeSS 2 is MIT-licensed end-to-end; the
+  full SDK tree is vendored + digest-verified per the runbook. No
+  new `deny.toml` exception fragments.
+- **Gate condition under which to revisit:** same as FSR 4 — when
+  the algorithm becomes implementable without the SDK.
+- **Acknowledged:** 2026-05-28 (ADR-051 amendment 7 / ADR-079).
+  Implementation status: scaffold landed Phase 6 PR 3.
+
+### 8. Format for adding new entries
 
 Future deviations land here via ADR amendments to this file:
 

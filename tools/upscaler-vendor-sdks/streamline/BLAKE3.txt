@@ -1,0 +1,12 @@
+# BLAKE3 digest manifest for NVIDIA Streamline 2.x SDK (ADR-079 §2).
+#
+# Each line names one SDK file + its expected BLAKE3 digest.
+# `build.rs` in streamline-sys/ verifies the manifest before invoking
+# bindgen; a mismatch fails the build with a refetch directive.
+#
+# Format: <hex digest> <whitespace> <relative path>
+#
+# Populated by the SDK fetch step documented in
+# docs/runbooks/vendor-upscaler-sdks.md.
+
+# (scaffold — no SDK vendored yet)

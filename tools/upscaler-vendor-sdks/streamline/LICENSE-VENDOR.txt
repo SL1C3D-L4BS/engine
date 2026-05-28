@@ -1,0 +1,16 @@
+NVIDIA Streamline SDK License Agreement
+
+This directory is a placeholder for the NVIDIA Streamline 2.x SDK,
+which is fetched per the procedure in
+docs/runbooks/vendor-upscaler-sdks.md. Once vendored, the SDK's
+LICENSE-VENDOR.txt file (NVIDIA's permissive source-distribution
+EULA) replaces this placeholder.
+
+ADR-079 §6 + ADR-051 entry 5 acknowledge the engineering deviation:
+NVIDIA's Streamline source distribution is permissive; the runtime
+DLL ships with the user's driver and is loaded behind the `dlss`
+cargo feature on `engine-upscale-vendor`. The baseline workspace
+build (no features) does not link any NVIDIA-licensed code.
+
+License URL (read at fetch time):
+  https://developer.nvidia.com/rtx/streamline

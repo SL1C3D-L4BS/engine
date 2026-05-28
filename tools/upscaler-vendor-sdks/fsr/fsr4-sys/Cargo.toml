@@ -1,0 +1,19 @@
+[package]
+name = "fsr4-sys"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+rust-version.workspace = true
+
+description = """
+Bindgen-generated FFI bindings to AMD FidelityFX FSR 4 SDK (RDNA 4
+tensor path). Vendored under tools/upscaler-vendor-sdks/fsr/ffx-sdk/.
+ADR-079. MIT licensed end-to-end.
+"""
+
+[lib]
+name = "fsr4_sys"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

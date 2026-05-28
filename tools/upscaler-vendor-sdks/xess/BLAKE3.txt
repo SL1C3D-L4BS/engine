@@ -1,0 +1,4 @@
+# BLAKE3 digest manifest for Intel XeSS 2 SDK (ADR-079 §2).
+# Populated by the SDK fetch step. Format: <hex digest> <path>.
+
+# (scaffold — no SDK vendored yet)

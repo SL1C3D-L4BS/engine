@@ -1,0 +1,13 @@
+AMD FidelityFX SDK License (MIT)
+
+Placeholder for the vendored AMD FidelityFX SDK. Once fetched per
+docs/runbooks/vendor-upscaler-sdks.md, the SDK's LICENSE file (MIT)
+replaces this placeholder.
+
+Full FidelityFX SDK source release:
+  https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+
+Per ADR-079 §1 the FSR 4 path is selected only on RDNA 4 hardware;
+on every other host the cascade falls through to ADR-076's in-tree
+FSR-EASU spatial upsampler. The `fsr` cargo feature on
+`engine-upscale-vendor` activates the tensor path.

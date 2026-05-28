@@ -1,0 +1,19 @@
+[package]
+name = "xess2-sys"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+rust-version.workspace = true
+
+description = """
+Bindgen-generated FFI bindings to Intel XeSS 2 SDK (XMX-accelerated
+on Arc B+; DP4a cross-vendor fallback). Vendored under
+tools/upscaler-vendor-sdks/xess/xess-sdk/. ADR-079.
+"""
+
+[lib]
+name = "xess2_sys"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
