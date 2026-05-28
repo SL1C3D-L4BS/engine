@@ -99,11 +99,29 @@ pub const RID_LINEAR_SAMPLER: ResourceId = ResourceId(60);
 pub const RID_BLOOM_UBO: ResourceId = ResourceId(61);
 pub const RID_TONEMAP_UBO: ResourceId = ResourceId(62);
 pub const RID_CSM_UBO: ResourceId = ResourceId(63);
-pub const RID_FRAME_UBO: ResourceId = ResourceId(64);
+/// GBufferPass's `PerFrame` UBO at `gbuffer.wgsl:27` —
+/// 3 mat4 + 2 vec4 = 224 B (rounded to 256 for alignment).
+pub const RID_GBUFFER_FRAME_UBO: ResourceId = ResourceId(64);
 pub const RID_SHADOW_SAMPLER: ResourceId = ResourceId(65);
 pub const RID_VERTEX_BUF: ResourceId = ResourceId(66);
 pub const RID_INDEX_BUF: ResourceId = ResourceId(67);
 pub const RID_INSTANCES_SSBO: ResourceId = ResourceId(68);
+/// LightingAccumulationPass's `FullScreenUniforms` UBO at
+/// `lighting.wgsl:10` — `inv_view_projection` + `camera_pos` +
+/// `screen_extent` + pad = 96 B.
+///
+/// **Distinct from `RID_GBUFFER_FRAME_UBO`.** The engine's pass-record
+/// scheduling test wires the same `frame_ubo` resource id to both
+/// GBufferPass and LightingAccumulationPass, but the two shaders
+/// declare *different* WGSL struct layouts at the same
+/// `@group(0) @binding(0)` slot. Sharing one buffer with both is
+/// fine for the structural smokes (the bytes are uninitialised and
+/// no shader reads correctness-sensitive output) but breaks pixel
+/// parity — Lighting would interpret GBuffer's `view_projection`
+/// matrix as its own `inv_view_projection`. The harness here
+/// gives each shader its own buffer so the cube fixture seeds the
+/// correct layout per pass.
+pub const RID_LIGHTING_FRAME_UBO: ResourceId = ResourceId(69);
 
 // =============================================================================
 // Resource sizing constants
@@ -216,7 +234,7 @@ impl ParityHarness {
             RID_GBUF_NM,
             RID_GBUF_MD,
             RID_DEPTH,
-            RID_FRAME_UBO,
+            RID_GBUFFER_FRAME_UBO,
             RID_INSTANCES_SSBO,
             RID_VERTEX_BUF,
             RID_INDEX_BUF,
@@ -246,7 +264,7 @@ impl ParityHarness {
             RID_LIGHTS,
             RID_SHADOW_ATLAS,
             RID_LIT,
-            RID_FRAME_UBO,
+            RID_LIGHTING_FRAME_UBO,
             RID_CLUSTER_UBO,
             RID_LIGHT_INDICES_SSBO,
             RID_SHADOW_SAMPLER,
@@ -439,7 +457,14 @@ impl Pool {
             ssbo(device, "parity.ibl.probes", IBL_PROBES_SIZE),
         );
         // UBOs.
-        table.register_buffer(RID_FRAME_UBO, ubo(device, "parity.ubo.frame", 256));
+        table.register_buffer(
+            RID_GBUFFER_FRAME_UBO,
+            ubo(device, "parity.ubo.frame.gbuffer", 256),
+        );
+        table.register_buffer(
+            RID_LIGHTING_FRAME_UBO,
+            ubo(device, "parity.ubo.frame.lighting", 96),
+        );
         table.register_buffer(RID_CSM_UBO, ubo(device, "parity.ubo.csm", 384));
         table.register_buffer(RID_CLUSTER_UBO, ubo(device, "parity.ubo.cluster", 112));
         table.register_buffer(RID_SSAO_UBO, ubo(device, "parity.ubo.ssao", 256));

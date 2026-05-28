@@ -25,11 +25,12 @@
 
 use crate::cluster::{ClusterGrid, assign_lights};
 use crate::framebuffer::{Framebuffer, Rgba8, linear_to_srgb_byte};
+use crate::post_fx::tonemap_aces;
 use crate::rasterize::{Vertex, Viewport, clear, rasterize_triangle};
 use crate::scene::{Aabb, Camera, Light, Material, MeshInstance};
-use crate::shading::{SurfaceFragment, accumulate_lighting};
+use crate::shading::{SurfaceFragment, accumulate_lighting, cook_torrance};
 use crate::shadow::{Cascades, ShadowAtlas, build_cascades, render_cascades};
-use engine_math::{Vec3, Vec4};
+use engine_math::{Mat4, Vec3, Vec4};
 
 /// A complete reference image + the resolution it was rendered at.
 #[derive(Clone, Debug)]
@@ -357,6 +358,206 @@ fn paint_cluster_heatmap(fb: &mut Framebuffer, cam: &Camera, grid: &ClusterGrid)
     }
 }
 
+/// Phase 5.5 A.3 — cube parity scene (ADR-046 fixture #1).
+///
+/// One 1m³ cube at the origin, lit by a single directional light, viewed
+/// from `(2, 2, 3)` with a 60° vertical FOV. Both the CPU oracle in this
+/// module and the GPU render-graph fixture at
+/// `engine-render/tests/pixel_parity/cube.rs` consume this exact scene so
+/// the parity check on the two outputs is testing the same inputs through
+/// both paths.
+///
+/// CPU oracle pipeline: ray-march each pixel against the cube AABB,
+/// evaluate Cook-Torrance per intersection against the directional light,
+/// ACES tonemap, sRGB encode. No IBL, no SSAO, no bloom, no TAA — those
+/// are zeroed on the GPU side too (Tonemap's `exposure = 1, bloom_mix = 0`;
+/// TAA's `blend_alpha = 1`).
+#[derive(Clone, Debug)]
+pub struct CubeParityScene {
+    /// Camera (view + projection).
+    pub camera: Camera,
+    /// Single directional light. `position_or_direction` points *toward
+    /// the scene*; the surface→light direction is the negation.
+    pub light: Light,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Cube material.
+    pub material: Material,
+    /// Render extent.
+    pub width: u32,
+    /// Render extent.
+    pub height: u32,
+}
+
+impl CubeParityScene {
+    /// Default v0 scene — 128 × 72, cube at origin, directional sun-like
+    /// light from the upper-left, warm-grey albedo at 0.35 roughness.
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        Self {
+            camera: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            light: Light::directional(Vec3::new(-0.3, -1.0, -0.5), Vec3::new(1.0, 0.95, 0.85), 3.0),
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+        }
+    }
+
+    /// Render the CPU oracle reference framebuffer.
+    pub fn render_cpu(&self) -> Framebuffer {
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        let inv_view = self.camera.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self.camera.projection().inverse().unwrap_or(Mat4::IDENTITY);
+
+        for py in 0..self.height {
+            for px in 0..self.width {
+                // Reconstruct a world-space ray from NDC: same algebra as
+                // `combined_deferred_scene`, just intersected against the
+                // cube AABB rather than a ground plane.
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let world_target = inv_view.transform_point3(view_pt);
+                let ray_dir = Vec3::new(
+                    world_target.x - self.camera.position.x,
+                    world_target.y - self.camera.position.y,
+                    world_target.z - self.camera.position.z,
+                )
+                .normalize_or_zero();
+
+                let Some((t, normal)) =
+                    intersect_ray_aabb(self.camera.position, ray_dir, &self.cube_aabb)
+                else {
+                    continue;
+                };
+
+                let world_p = Vec3::new(
+                    self.camera.position.x + ray_dir.x * t,
+                    self.camera.position.y + ray_dir.y * t,
+                    self.camera.position.z + ray_dir.z * t,
+                );
+                let surface = SurfaceFragment {
+                    world_p,
+                    normal,
+                    material: self.material,
+                };
+                let view_dir = Vec3::new(
+                    self.camera.position.x - world_p.x,
+                    self.camera.position.y - world_p.y,
+                    self.camera.position.z - world_p.z,
+                );
+                // Directional light: stored direction is "from light to
+                // scene"; the BRDF wants "surface to light", so negate.
+                let l_to_scene = self.light.position_or_direction;
+                let l_dir = Vec3::new(-l_to_scene.x, -l_to_scene.y, -l_to_scene.z);
+                let radiance = Vec3::new(
+                    self.light.color.x * self.light.intensity,
+                    self.light.color.y * self.light.intensity,
+                    self.light.color.z * self.light.intensity,
+                );
+                let lit_linear = cook_torrance(&surface, view_dir, l_dir, radiance);
+                let tonemapped = tonemap_aces(lit_linear);
+                fb.write(
+                    px,
+                    py,
+                    Rgba8 {
+                        r: linear_to_srgb_byte(tonemapped.x),
+                        g: linear_to_srgb_byte(tonemapped.y),
+                        b: linear_to_srgb_byte(tonemapped.z),
+                        a: 255,
+                    },
+                );
+            }
+        }
+        fb
+    }
+}
+
+/// Slab-method ray vs. AABB intersection. Returns `(t, normal)` for the
+/// nearest entry point, where `t > 0` and `normal` is the unit outward
+/// face normal.
+fn intersect_ray_aabb(origin: Vec3, dir: Vec3, aabb: &Aabb) -> Option<(f32, Vec3)> {
+    let inv = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+    let (tx_min, tx_max, nx_pos) = if inv.x >= 0.0 {
+        (
+            (aabb.min.x - origin.x) * inv.x,
+            (aabb.max.x - origin.x) * inv.x,
+            Vec3::new(-1.0, 0.0, 0.0),
+        )
+    } else {
+        (
+            (aabb.max.x - origin.x) * inv.x,
+            (aabb.min.x - origin.x) * inv.x,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+    };
+    let (ty_min, ty_max, ny_pos) = if inv.y >= 0.0 {
+        (
+            (aabb.min.y - origin.y) * inv.y,
+            (aabb.max.y - origin.y) * inv.y,
+            Vec3::new(0.0, -1.0, 0.0),
+        )
+    } else {
+        (
+            (aabb.max.y - origin.y) * inv.y,
+            (aabb.min.y - origin.y) * inv.y,
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+    };
+    let (tz_min, tz_max, nz_pos) = if inv.z >= 0.0 {
+        (
+            (aabb.min.z - origin.z) * inv.z,
+            (aabb.max.z - origin.z) * inv.z,
+            Vec3::new(0.0, 0.0, -1.0),
+        )
+    } else {
+        (
+            (aabb.max.z - origin.z) * inv.z,
+            (aabb.min.z - origin.z) * inv.z,
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+    };
+    let mut tmin = tx_min;
+    let mut normal = nx_pos;
+    if ty_min > tmin {
+        tmin = ty_min;
+        normal = ny_pos;
+    }
+    if tz_min > tmin {
+        tmin = tz_min;
+        normal = nz_pos;
+    }
+    let tmax = tx_max.min(ty_max).min(tz_max);
+    if tmax < 0.0 || tmin > tmax || tmin < 0.0 {
+        return None;
+    }
+    Some((tmin, normal))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +613,21 @@ mod tests {
             .iter()
             .any(|p| p.r > 0 || p.g > 0 || p.b > 0);
         assert!(any_lit, "combined-deferred scene rendered fully black");
+    }
+
+    #[test]
+    fn cube_parity_scene_renders_lit_cube() {
+        let scene = CubeParityScene::default_v0();
+        let fb = scene.render_cpu();
+        assert_eq!(fb.width(), scene.width);
+        assert_eq!(fb.height(), scene.height);
+        // Cube occupies the centre of the framebuffer at this camera
+        // angle. Centre pixel must be lit by the warm directional light;
+        // an unlit ray miss leaves a black pixel via `Rgba8::default`.
+        let centre = fb.sample(scene.width / 2, scene.height / 2);
+        assert!(
+            centre.r > 0 || centre.g > 0 || centre.b > 0,
+            "centre of cube must be lit: {centre:?}"
+        );
     }
 }
