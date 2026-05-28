@@ -52,7 +52,7 @@ fn taa_motion_parity() {
         };
         let mut user: () = ();
         graph0
-            .execute(0, &mut user, Some(gpu), Some(&pool.table))
+            .execute(0, &mut user, Some(gpu), Some(&pool.table), None)
             .expect("frame 0 executes");
     }
     let _t0 = queue.submit(encoder0);
@@ -71,7 +71,7 @@ fn taa_motion_parity() {
         };
         let mut user: () = ();
         graph1
-            .execute(1, &mut user, Some(gpu), Some(&pool.table))
+            .execute(1, &mut user, Some(gpu), Some(&pool.table), None)
             .expect("frame 1 executes");
     }
     let staging = harness.copy_tonemap_to_staging(&mut encoder1, &pool);

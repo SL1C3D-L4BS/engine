@@ -183,6 +183,14 @@ pub struct PassContext<'a> {
     /// scheduling-only unit tests. ADR-075 §5 — pass `record()`
     /// bodies short-circuit gracefully when this is `None`.
     pub resources: Option<&'a dyn views::ResourceResolver>,
+    /// Upscaler cascade registry — `Some(_)` when the host renderer
+    /// or bench binary wires one through; `None` on the no-upscale
+    /// graph variant and on scheduling-only unit tests. Phase 6 PR 1a
+    /// (ADR-083) — [`crate::passes::UpscalePass::record`] consumes
+    /// this to pick the active provider via
+    /// [`crate::upscale::UpscalerRegistry::select`] and dispatch the
+    /// corresponding compute pipeline.
+    pub upscaler: Option<&'a crate::upscale::UpscalerRegistry>,
     /// Backend-opaque scratchpad. The software rasterizer uses
     /// it for output-buffer access; the GPU backend may stash
     /// per-frame ECS/world state here.
@@ -415,6 +423,7 @@ impl RenderGraph {
         user: &mut dyn core::any::Any,
         mut gpu: Option<GpuFrameContext<'_>>,
         resources: Option<&dyn views::ResourceResolver>,
+        upscaler: Option<&crate::upscale::UpscalerRegistry>,
     ) -> Result<(), ExecuteError> {
         let Some(schedule) = self.schedule.clone() else {
             return Err(ExecuteError::NotCompiled);
@@ -432,6 +441,7 @@ impl RenderGraph {
                 frame_idx,
                 gpu: gpu_iter,
                 resources,
+                upscaler,
                 user: &mut *user,
             };
             pass.record(&mut ctx);

@@ -135,7 +135,7 @@ fn cull_pass_executes_via_resolver() {
         encoder: &mut encoder,
     };
     graph
-        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .execute(0, &mut user, Some(gpu), Some(resolver), None)
         .expect("execute completes");
     let _token = queue.submit(encoder);
 }
@@ -318,7 +318,7 @@ fn lighting_accumulation_executes_via_resolver() {
         encoder: &mut encoder,
     };
     graph
-        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .execute(0, &mut user, Some(gpu), Some(resolver), None)
         .expect("execute completes");
     let _token = queue.submit(encoder);
 }
@@ -413,7 +413,7 @@ fn bloom_pass_executes_via_resolver() {
         encoder: &mut encoder,
     };
     graph
-        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .execute(0, &mut user, Some(gpu), Some(resolver), None)
         .expect("execute completes");
     let _token = queue.submit(encoder);
 }
@@ -583,7 +583,7 @@ fn csm_shadow_pass_executes_via_resolver() {
         encoder: &mut encoder,
     };
     graph
-        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .execute(0, &mut user, Some(gpu), Some(resolver), None)
         .expect("execute completes");
     let _token = queue.submit(encoder);
 }
@@ -704,7 +704,7 @@ fn gbuffer_pass_executes_via_resolver() {
         encoder: &mut encoder,
     };
     graph
-        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .execute(0, &mut user, Some(gpu), Some(resolver), None)
         .expect("execute completes");
     let _token = queue.submit(encoder);
 }

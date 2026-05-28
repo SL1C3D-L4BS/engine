@@ -133,9 +133,11 @@ use crate::shader::{
     build_render_pipeline, wgsl_artefact_set,
 };
 use crate::shaders::{
-    BLOOM_WGSL, CLUSTER_ASSIGN_WGSL, CSM_SHADOW_WGSL, CULL_WGSL, GBUFFER_WGSL, IBL_EVALUATE_WGSL,
-    LIGHTING_WGSL, SSAO_WGSL, TAA_RESOLVE_WGSL, TONEMAP_WGSL,
+    BILINEAR_UPSCALE_WGSL, BLOOM_WGSL, CLUSTER_ASSIGN_WGSL, CSM_SHADOW_WGSL, CULL_WGSL,
+    FSR_EASU_WGSL, GBUFFER_WGSL, IBL_EVALUATE_WGSL, LIGHTING_WGSL, SSAO_WGSL, TAA_RESOLVE_WGSL,
+    TONEMAP_WGSL,
 };
+use crate::upscale::UpscalerKind;
 
 // =============================================================================
 // Pipeline-builder helpers (one per pass / per entry point).
@@ -327,6 +329,32 @@ pub(crate) fn build_tonemap_pipeline(device: &Device) -> Result<ComputePipeline,
         device,
         &ComputePipelineHelperDesc {
             label: "post.fx.tonemap",
+            compute: &cs,
+            entry: "cs_main",
+        },
+    )
+}
+
+pub(crate) fn build_bilinear_upscale_pipeline(
+    device: &Device,
+) -> Result<ComputePipeline, ShaderError> {
+    let cs = wgsl_artefact_set(Stage::Compute, "cs_main", BILINEAR_UPSCALE_WGSL);
+    build_compute_pipeline(
+        device,
+        &ComputePipelineHelperDesc {
+            label: "post.fx.upscale.bilinear",
+            compute: &cs,
+            entry: "cs_main",
+        },
+    )
+}
+
+pub(crate) fn build_fsr_easu_pipeline(device: &Device) -> Result<ComputePipeline, ShaderError> {
+    let cs = wgsl_artefact_set(Stage::Compute, "cs_main", FSR_EASU_WGSL);
+    build_compute_pipeline(
+        device,
+        &ComputePipelineHelperDesc {
+            label: "post.fx.upscale.fsr_easu",
             compute: &cs,
             entry: "cs_main",
         },
@@ -1959,27 +1987,52 @@ impl Pass for BloomPass {
 // Upscale (PR 5) — dispatches through the UpscalerRegistry.
 // =============================================================================
 
-/// Upscale pass (PR 5, ADR-005 + ADR-053). The pass body adapts the
-/// active [`crate::upscale::UpscalerProvider`] into the render-graph
-/// schedule; vendor SDK dispatch lands in PR 8.
+/// Upscale pass (PR 5, ADR-005 + ADR-053 + ADR-083).
 ///
 /// Skipping the upscale pass (no-upscale variant) is the PR-4 graph
 /// shape: bloom + tonemap read `TaaResolvedColor` directly. With the
 /// upscale variant, bloom still extracts from the TAA-resolved buffer
 /// (chroma + energy invariants) and tonemap reads `upscaled` for its
 /// HDR input.
-#[derive(Debug, Clone, Copy)]
+///
+/// Phase 6 PR 1a (ADR-083) replaces the prior Phase-5 no-op with a
+/// real dispatch: `record()` resolves the cascade winner via
+/// [`crate::upscale::UpscalerRegistry::select`] on the
+/// [`PassContext::upscaler`] handle, then dispatches the matching
+/// compute pipeline. Two pipelines ship in tree:
+///
+/// - [`shaders/bilinear_upscale.wgsl`] — the universal floor; runs
+///   when the registry selects [`UpscalerKind::OwnedBilinear`] (or any
+///   vendor SDK whose runtime dispatch is not yet bound).
+/// - [`shaders/fsr_easu.wgsl`] — Polaris-compatible WGSL port of
+///   GPUOpen FidelityFX FSR 1.0 EASU; runs when the registry selects
+///   [`UpscalerKind::Fsr`] (ADR-076 step 2 closure).
+#[derive(Debug)]
 pub struct UpscalePass {
     /// TAA-resolved HDR input (internal resolution).
     pub resolved: ResourceId,
     /// Upscaled HDR output (display resolution).
     pub upscaled: ResourceId,
+    /// Linear sampler used by both upscale shaders to read the
+    /// internal-resolution input.
+    pub linear_sampler: ResourceId,
+    bilinear_pipeline: Option<ComputePipeline>,
+    easu_pipeline: Option<ComputePipeline>,
 }
 
 impl UpscalePass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(resolved: ResourceId, upscaled: ResourceId) -> Self {
-        Self { resolved, upscaled }
+    /// `linear_sampler` is shared with the rest of the post-FX chain
+    /// (TaaPass, BloomPass, TonemapPass already consume it) — the
+    /// upscale shaders bind it at `@group(0) @binding(1)`.
+    pub fn new(resolved: ResourceId, upscaled: ResourceId, linear_sampler: ResourceId) -> Self {
+        Self {
+            resolved,
+            upscaled,
+            linear_sampler,
+            bilinear_pipeline: None,
+            easu_pipeline: None,
+        }
     }
 }
 
@@ -1996,12 +2049,97 @@ impl Pass for UpscalePass {
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.upscaled);
     }
-    fn record(&mut self, _ctx: &mut PassContext) {
-        // PR 7: no-op. The upscaler dispatches through
-        // [`crate::upscale::UpscalerRegistry`] which is not yet
-        // threaded through `PassContext`; PR 8 wires the registry
-        // lookup + `provider.upscale(&mut UpscaleCtx { .. })` call.
-        // CPU oracle reference: `engine_raster::upscale::bilinear_upscale`.
+    fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
+        // Build both pipelines eagerly — the cascade choice is a
+        // per-frame decision, but the GPU resources are constant.
+        self.bilinear_pipeline = Some(build_bilinear_upscale_pipeline(device)?);
+        self.easu_pipeline = Some(build_fsr_easu_pipeline(device)?);
+        Ok(())
+    }
+    fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 + ADR-083 §2 — six-step template, plus the
+        // upscaler-registry short-circuit.
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(registry) = ctx.upscaler else {
+            // No registry attached — the renderer is in the no-upscale
+            // variant; nothing to dispatch.
+            return;
+        };
+        let Some(src_view) = resources.resolve_view(self.resolved) else {
+            return;
+        };
+        let Some(dst_view) = resources.resolve_view(self.upscaled) else {
+            return;
+        };
+        let Some(sampler) = resources.resolve_sampler(self.linear_sampler) else {
+            return;
+        };
+
+        // Cascade-select the active provider against the device. The
+        // logger callback is the ADR-005 §Decision item 3 telemetry
+        // hook; for the in-tree dispatch we only need the chosen kind
+        // to pick a pipeline.
+        let mut chosen: Option<UpscalerKind> = None;
+        let _ = registry.select(gpu.device, &mut |k| chosen = Some(k));
+        let Some(kind) = chosen else {
+            return;
+        };
+
+        // Pick the matching pipeline. Vendor SDKs that have not yet
+        // bound their runtime (DLSS / XeSS) fall through to bilinear
+        // — the cascade's universal floor (ADR-067 "degrade-but-keep-
+        // frames"). OwnedOnnxTemporal likewise dispatches bilinear
+        // until the ort-runtime feature loads the trained ONNX model.
+        let pipeline = match kind {
+            UpscalerKind::Fsr => self.easu_pipeline.as_ref(),
+            UpscalerKind::OwnedBilinear
+            | UpscalerKind::Dlss
+            | UpscalerKind::Xess
+            | UpscalerKind::OwnedOnnx => self.bilinear_pipeline.as_ref(),
+        };
+        let Some(pipeline) = pipeline else {
+            return;
+        };
+
+        // Bind group: src texture + linear sampler + dst storage
+        // texture. Layout matches both `bilinear_upscale.wgsl` and
+        // `fsr_easu.wgsl` (`@group(0)` bindings 0 / 1 / 2).
+        let layout = pipeline.bind_group_layout(0);
+        let bind_group = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.upscale.bindgroup",
+                layout: &layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&src_view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&dst_view),
+                    },
+                ],
+            },
+        );
+
+        // Dispatch one workgroup per 8×8 destination tile. Both
+        // shaders use @workgroup_size(8, 8, 1); the trailing pixels
+        // short-circuit via the per-shader bounds check.
+        let dim = dispatch_dim_for_view(&dst_view);
+        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
+        cpass.set_pipeline(pipeline);
+        cpass.set_bind_group(0, &bind_group);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -2497,7 +2635,7 @@ mod tests {
             taa_ubo,
             linear_sampler,
         ));
-        g.add_pass(UpscalePass::new(taa_resolved, upscaled));
+        g.add_pass(UpscalePass::new(taa_resolved, upscaled, linear_sampler));
         g.add_pass(BloomPass::new(
             taa_resolved,
             bloom,

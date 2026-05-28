@@ -137,8 +137,13 @@ fn classify(body: &str, fn_decl_window: &str) -> Shape {
     // adding new helpers requires updating this list explicitly so
     // the discipline can't drift silently.
     let has_gpu_sc = body.contains("ctx.gpu.as_mut()");
-    let has_pipeline_sc =
-        body.contains("self.pipeline.as_ref()") || body.contains("self.pipeline_extract.as_ref()");
+    // UpscalePass (Phase 6 PR 1a, ADR-083) carries two pipelines —
+    // bilinear + EASU — selected at record() time from the upscaler
+    // registry; accept either-or-both as the short-circuit witness.
+    let has_pipeline_sc = body.contains("self.pipeline.as_ref()")
+        || body.contains("self.pipeline_extract.as_ref()")
+        || body.contains("self.bilinear_pipeline.as_ref()")
+        || body.contains("self.easu_pipeline.as_ref()");
     let has_gpu_work = body.contains("begin_compute_pass(")
         || body.contains("begin_render_pass(")
         || body.contains("begin_render_pass_desc(")

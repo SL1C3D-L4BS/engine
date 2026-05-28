@@ -49,7 +49,7 @@ fn post_fx_chain_parity() {
         };
         let mut user: () = ();
         graph
-            .execute(0, &mut user, Some(gpu), Some(&pool.table))
+            .execute(0, &mut user, Some(gpu), Some(&pool.table), None)
             .expect("graph executes end-to-end");
     }
     let staging = harness.copy_tonemap_to_staging(&mut encoder, &pool);
