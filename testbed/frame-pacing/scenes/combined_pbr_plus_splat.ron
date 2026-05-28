@@ -1,0 +1,31 @@
+// Frame-pacing scenario — combined deferred PBR + 100k-splat ambient
+// overlay (Phase 6 PR 5).
+//
+// Exercises the full Phase 5.5 + Phase 6 graph end-to-end: 11
+// Track-A passes (gbuffer, cluster, csm, cull, lighting, ibl, taa,
+// ssao, bloom, tonemap, upscale) plus the SplatComposite pass for
+// 100k particulate-fog splats overlaid as a translucent volume.
+//
+// Budget per `tools/frame-pacing/budgets.toml`: p99 ≤ 20 ms. The
+// spec milestone (line 1636) names "3DGS scene > 60 FPS"; the
+// combined scene is the heaviest workload and ships at the relaxed
+// 50 FPS budget — 60 FPS on this scene is a Phase 8+ optimisation
+// target.
+
+FramePacingScene(
+    seed: 2,
+    frames: 3600,
+
+    // Standard PBR scene size + a 100k splat overlay.
+    entities: 10000,
+    unique_meshes: 50,
+
+    directional_lights: 16,
+    point_spot_lights: 48,
+
+    camera_seed: 2,
+    quality: "rx-580",
+    target_fps: 50,
+    internal_extent: (1280, 720),
+    output_extent: (2560, 1440),
+)

@@ -1,0 +1,38 @@
+// Frame-pacing scenario — 1M-splat garden (Phase 6 PR 5).
+//
+// The literal Phase 6 spec milestone (line 1636): "3DGS scene > 60
+// FPS". The garden scene is the de-facto 3DGS benchmark from the
+// Kerbl et al. 2023 SIGGRAPH release; the data lands via the
+// importer subprocess (`tools/engine-splat-import`) per ADR-077 +
+// ADR-078.
+//
+// Camera path: 60-second deterministic orbit around the scene
+// centroid (the same orbit used for the splat_garden_1m pixel-parity
+// fixture, re-used here for frame-pacing measurement).
+//
+// Budget per `tools/frame-pacing/budgets.toml`: p99 ≤ 16.6 ms (60
+// FPS). Frame-zero excluded from p99 stats per ADR-068 PR 7
+// addendum (first-frame stall).
+
+FramePacingScene(
+    seed: 1,
+    frames: 3600,
+
+    // 3DGS scenes do not use ECS-style entities; the splat cloud is
+    // the single render primitive. `entities` is reused to record
+    // the splat count so the JSON report's `entity_count` field
+    // carries the 1M figure.
+    entities: 1000000,
+    unique_meshes: 0,
+
+    // No traditional lights — the splat cloud carries L=2 SH per
+    // splat for view-dependent appearance (ADR-077 §5).
+    directional_lights: 0,
+    point_spot_lights: 0,
+
+    camera_seed: 1,
+    quality: "rx-580",
+    target_fps: 60,
+    internal_extent: (1280, 720),
+    output_extent: (2560, 1440),
+)

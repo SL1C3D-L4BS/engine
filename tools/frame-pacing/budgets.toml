@@ -38,3 +38,24 @@ p99_ms = 18.3
 # the spec target may need a per-envelope amendment once A.2b-ii's GPU
 # path lands and the *actual* renderer σ can be measured.
 stddev_ms = 1.04
+
+# Per-scene budget overrides (Phase 6 PR 5, ADR-084).
+#
+# Two new 3DGS scenes land in v0.4. The default budgets above apply
+# when no per-scene override is keyed below. Scene fixtures keep
+# their own BLAKE3 content addressing in the JSON report's
+# `scene_hash` field; the budget rows are looked up by scene-name
+# stem, not by hash. The current `engine_bench_frame_pacing::budgets`
+# reader picks up the top-level `[budgets]` block only; per-scene
+# overrides are wired in the same PR 5 commit that adds the new
+# scenes (the reader gains a `scene_override` HashMap).
+
+[budgets.splat_garden_1m]
+# Phase 6 spec milestone (line 1636): 3DGS scene > 60 FPS on RX 580.
+p99_ms = 16.6
+
+[budgets.combined_pbr_plus_splat]
+# Combined deferred + 100k-splat overlay; full Phase 5.5 + Phase 6
+# graph end-to-end. 50 FPS = 20 ms budget. The spec milestone
+# doesn't strictly require 60 FPS on this scene.
+p99_ms = 20.0
