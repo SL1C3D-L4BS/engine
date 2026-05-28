@@ -3,7 +3,7 @@
 //! deferred pipeline binds (ADR-064 + ADR-065).
 //!
 //! The 11 Phase-5 pass stubs ship as `record()` no-ops; their wgpu
-//! draw/dispatch bodies arrive when the self-hosted RX 6700 XT runner
+//! draw/dispatch bodies arrive when the self-hosted GPU runner
 //! lets us validate pixel parity (Phase 6 PR 3.5 + PR 4.5). Until
 //! then, this module pins the *contracts* both sides of the boundary
 //! must agree on:

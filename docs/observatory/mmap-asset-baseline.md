@@ -11,7 +11,7 @@ sweep.
 
 ## Host
 
-- **CPU**: Intel(R) Core(TM) i7-6700 CPU @ 3.40GHz
+- **CPU**: Intel Skylake 4c/8t @ 3.4 GHz (developer's machine)
 - **Date**: 2026-05-19
 - **Toolchain**: stable 1.95.0 (`rust-toolchain.toml`)
 - **Profile**: `release`

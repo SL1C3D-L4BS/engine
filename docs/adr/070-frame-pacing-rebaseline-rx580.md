@@ -22,8 +22,8 @@
   It?* (McKenney, 2024), Ch. 3 (Hardware), Ch. 5 (Counting).
   McKenney's scheduler-jitter analysis bounds the σ contribution
   from kernel preemption — relevant to why the spec's σ ≤ 1.04 ms
-  target (calibrated against AMD Ryzen 7 5700G 8c/16t) is tight on
-  an i7-6700 4c/8t Skylake.
+  target (calibrated against an 8c/16t Zen 3 proxy CPU) is tight on
+  a 4c/8t Skylake.
 - *Computer Architecture: A Quantitative Approach*, 5th ed. (Hennessy
   & Patterson, 2011), Ch. 1.7 (Quantitative Principles — percentile
   vs mean), Ch. 2 (Memory Hierarchy — why L3 size affects σ).
@@ -32,14 +32,14 @@
 ## Context
 
 ADR-047 §2 specified a self-hosted CI runner labelled
-`self-hosted-gpu-rx6700xt` (Ryzen 7 5700G + RX 6700 XT, 32 GiB DDR4,
+`self-hosted-gpu` (8c/16t Zen 3 proxy CPU + RDNA2-class GPU, 32 GiB DDR4,
 Mesa RADV, `linux-cachyos-bore`). The runner was never provisioned;
 the gate has been informational (`continue-on-error: true`) since
 Phase 5 PR 6 landed. The plan recorded in
 `~/.claude/plans/radiant-enchanting-cocoa.md` surfaced the deeper
 mismatch: the developer's actual hardware is the spec's named
 Recommended-tier hardware (Part XX.7 line 1587 — RX 580), not the
-proxy Ryzen 7 5700G + RX 6700 XT ADR-047 picked because RX 580s were
+proxy 8c/16t Zen 3 proxy CPU + RDNA2-class GPU ADR-047 picked because RX 580s were
 "scarce and price-volatile for CI use" (ADR-047 §2). Both rationales
 for the proxy hardware have evaporated: the developer owns the spec
 hardware, and the CI runner doesn't exist.
@@ -64,8 +64,8 @@ hardware — fulfilling both ADR-047's "milestone bench on actual RX
 
 ### 1. Re-baselined hardware envelope
 
-- **CPU**: Intel Core i7-6700 (Skylake, 6th gen, Q3 2015, 4c/8t @
-  3.4–4.0 GHz, AVX2 + FMA but no AVX-512, 8 MiB L3, no
+- **CPU**: Intel Skylake (4c/8t @ 3.4–4.0 GHz, AVX2 + FMA, no
+  AVX-512, 8 MiB L3, no
   `linux-cachyos-bore` sched-ext kernel tuning required since the
   user's distribution already uses `linux-cachyos-bore` per spec
   Part XVIII.4).
@@ -85,7 +85,7 @@ This is the spec's named Recommended-tier hardware (line 1587 — "RX
 
 The spec's published targets (ADR-016, ADR-047 §3) are p99 ≤ 18.3 ms
 and σ ≤ 1.04 ms at the 60 FPS target. They were calibrated against
-the proxy Ryzen 7 5700G + RX 6700 XT, not measured on the spec's
+the proxy 8c/16t Zen 3 proxy CPU + RDNA2-class GPU, not measured on the spec's
 named hardware. McKenney's analysis (*Is Parallel Programming Hard*
 Ch. 3) bounds the achievable σ floor on 4c/8t Skylake without strict
 real-time scheduling at ~0.5–1.5 ms depending on background load;
@@ -117,7 +117,7 @@ ADR-047 §5; this ADR inherits the discipline).
 ### 3. Enforcement mechanism — local `just frame-pacing` recipe
 
 The GitHub-Actions `frame_pacing` job that referenced the
-non-existent `self-hosted-gpu-rx6700xt` runner is removed from
+non-existent `self-hosted-gpu` runner is removed from
 `.github/workflows/ci.yml`. The bench survives as a local recipe:
 
 ```fish
@@ -151,7 +151,7 @@ binary itself is unchanged.
 ### 4. Runbook rewrite
 
 `docs/runbooks/frame-pacing-runner.md` is rewritten from "how to
-provision an RX 6700 XT runner" to "how to run the local bench
+provision an RDNA2-class runner" to "how to run the local bench
 correctly":
 
 - Kernel preempt settings (`linux-cachyos-bore` confirmed via
@@ -173,7 +173,7 @@ replaces the CI-runner provisioning steps that no longer apply.
 ADR-047 is **superseded in part** by this ADR. Specifically:
 
 - ADR-047 §1 (standard scenario `bench.frame_pacing.v0`) **stands**.
-- ADR-047 §2 (self-hosted RX 6700 XT runner) **superseded** by this
+- ADR-047 §2 (self-hosted GPU runner) **superseded** by this
   ADR §1 + §3.
 - ADR-047 §3 (p99 / σ thresholds) **superseded** by this ADR §2.
 - ADR-047 §4 (strict regression band) **stands** in spirit but the
@@ -250,7 +250,7 @@ amends and supersedes the operational sections.
 
 ## Alternatives considered
 
-- **Provision the self-hosted RX 6700 XT runner.** Defeats the
+- **Provision the self-hosted GPU runner.** Defeats the
   first-principles call: the developer has the spec's milestone
   hardware. Adding a second machine for CI is operational overhead.
 - **Provision the developer's RX 580 as the GitHub Actions runner.**
@@ -268,7 +268,7 @@ amends and supersedes the operational sections.
 ## Verification
 
 - `.github/workflows/ci.yml` no longer references
-  `self-hosted-gpu-rx6700xt`. `cargo deny check` + `just ci` pass
+  `self-hosted-gpu`. `cargo deny check` + `just ci` pass
   unchanged.
 - `just frame-pacing` runs locally without environment-specific
   prerequisites (the bench binary is workspace-built; the scene
@@ -293,7 +293,7 @@ amends and supersedes the operational sections.
       records the 2026-05-27 CPU-oracle baseline (mean 83.6 ms / σ
       1.35–1.40 ms) and points at the observatory appendix.
 - [x] `docs/runbooks/frame-pacing-runner.md` rewritten end-to-end:
-      hardware envelope = developer's i7-6700 + RX 580; pre-bench
+      hardware envelope = developer's Skylake 4c/8t + RX 580; pre-bench
       checklist; standard scenario invocation; repeat-run protocol;
       USE-method debugging table; ADR amendment trigger conditions.
 - [x] `docs/observatory/phase-5-milestone-baseline.md` measurement

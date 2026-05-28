@@ -42,7 +42,7 @@ _(none)_
 ## Workflow
 
 1. **Detection.** The frame-pacing CI gate (ADR-047) on the
-   self-hosted RX 6700 XT runner fires when the oracle metric
+   self-hosted GPU runner fires when the oracle metric
    exceeds the 1/255 threshold. The harness output names the
    fixture id and the per-channel L1 distance.
 2. **Investigation.** A PR investigates the divergence: is it a real

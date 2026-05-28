@@ -526,7 +526,7 @@ jobs:
   # Frame-pacing gate removed per ADR-070 (Phase 5.5 C.2 — 2026-05-27).
   #
   # ADR-047's original `frame_pacing` job referenced a
-  # `self-hosted-gpu-rx6700xt` runner that was never provisioned. The
+  # `self-hosted-gpu` runner that was never provisioned. The
   # developer's actual hardware is the spec's named Recommended-tier
   # hardware (RX 580 / Polaris GFX8, spec Part XX.7 line 1587) — the
   # spec milestone hardware. Per ADR-070, frame-pacing measurement

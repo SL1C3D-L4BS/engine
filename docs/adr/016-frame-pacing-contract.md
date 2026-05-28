@@ -91,7 +91,7 @@ The bench is a small CLI; portability is a goal.
 
 - Phase 5 PR 6 ships the gate (ADR-047). Pre-Phase-5 PRs do not
   have a frame-pacing gate (the renderer isn't real yet).
-- The self-hosted RX 6700 XT runner is the CI's measurement
+- The self-hosted GPU runner is the CI's measurement
   environment (per ADR-047 §Risks; cold-spare per ADR-047 §6).
 - `docs/observatory/phase-5-milestone-baseline.md` is the
   baseline file; PR comparisons go against this baseline.

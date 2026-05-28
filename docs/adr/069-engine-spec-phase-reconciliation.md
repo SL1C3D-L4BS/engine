@@ -54,7 +54,7 @@ trait surface complete, but:
   enabled, so wgpu could not reach a real adapter at all.
 - The frame-pacing milestone bench used a synthetic CPU workload
   (`bin/engine-bench-frame-pacing/src/main.rs` lines 24–29 are explicit:
-  "GPU-backed numbers land when the self-hosted RX 6700 XT runner
+  "GPU-backed numbers land when the self-hosted GPU runner
   stands up in PR 6").
 - That self-hosted runner was never provisioned.
 

@@ -19,7 +19,7 @@ pub enum DeviceLimits {
     /// RX 580 baseline — the Phase 5 milestone target. 16 K bindless slots,
     /// `downlevel_defaults` limits. The minimum spec-supported tier.
     Tier1Minimum,
-    /// RTX 3060 / RX 6700 XT class. 65 K bindless slots, `default` wgpu
+    /// RTX 3060 / RDNA-2-class. 65 K bindless slots, `default` wgpu
     /// limits, CSM 4096².
     Tier2Recommended,
     /// RTX 4080 / RX 7900 XTX class. 262 K bindless slots, push-constant

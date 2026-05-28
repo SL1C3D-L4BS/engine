@@ -12,7 +12,7 @@ two built-in workloads:
 
 ## Host
 
-- **CPU**: Intel(R) Core(TM) i7-6700 CPU @ 3.40GHz
+- **CPU**: Intel Skylake 4c/8t @ 3.4 GHz (developer's machine)
 - **Date**: 2026-05-19
 - **Kernel**: Linux 7.0.9-1-cachyos-bore
 - **`perf_event_paranoid`**: 2 (default; user-only sampling)

@@ -230,10 +230,10 @@ backend pixel-parity oracle (ADR-046).
   005 + ADR-053 §PR-5.
 - **PR 6 — Frame-pacing CI gate + Phase 5 closure.** The
   `frame_pacing` job lands in `.github/workflows/ci.yml`, runs on a
-  `self-hosted-gpu-rx6700xt` runner, evaluates p99 + σ against
+  `self-hosted-gpu` runner, evaluates p99 + σ against
   `tools/frame-pacing/budgets.toml`, and uploads the JSON report as
   a workflow artifact. The job is **informational** (continue-on-
-  error) until the self-hosted RX 6700 XT runner is provisioned per
+  error) until the self-hosted GPU runner is provisioned per
   `docs/runbooks/frame-pacing-runner.md`; the promotion path is
   documented in the runbook. ADR-016 + ADR-047 + ADR-053 §PR-6.
 
@@ -394,7 +394,7 @@ the TOML helpers duplicated across three sites).
 
 **PR 8 — Engine Core v0.3 closure (deferred, runner-gated).** The
 remaining work folds into a single PR that needs environmental
-prerequisites (RX 6700 XT runner + downloaded DLSS/FSR/XeSS SDKs +
+prerequisites (RDNA2-class runner + downloaded DLSS/FSR/XeSS SDKs +
 ORT native binaries + Git LFS):
 
 - Vendor SDK FFI: `*-sys` crates at

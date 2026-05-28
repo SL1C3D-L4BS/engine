@@ -148,7 +148,7 @@ at runtime (skipped by the smoke test's catch).
 - The frame-pacing bench (`bin/engine-bench-frame-pacing/`) gains the
   ability to swap its synthetic CPU workload for a real GPU dispatch
   path once Track A's pass `record()` bodies are wired (ADR-075).
-- The ADR-068 "PR 7" addendum comment about "self-hosted RX 6700 XT
+- The ADR-068 "PR 7" addendum comment about "self-hosted RDNA2-class GPU
   runner with feature toggles" is superseded: backend toggling is no
   longer an external CI concern, it is a workspace property. The
   ADR-070 frame-pacing re-baseline ADR will document the local-bench

@@ -36,7 +36,7 @@ spec_version = "2.0"
 # stubs (DLSS/FSR/XeSS pending Phase 6) + OwnedBilinear placeholder +
 # the RX-580 milestone bench (ADR-005); (6) frame-pacing CI gate
 # scaffolded as informational (ADR-016 + ADR-047 — promoted to
-# required when the self-hosted RX 6700 XT runner is provisioned per
+# required when the self-hosted GPU runner is provisioned per
 # `docs/runbooks/frame-pacing-runner.md`). PR-6 also closed two
 # audit follow-ups: the full ADR-060 sli aggregate-ops codegen
 # surface (ArrayLit / MapLit syntax + Field / Index / StructLit /

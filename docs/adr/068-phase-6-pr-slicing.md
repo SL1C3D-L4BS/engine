@@ -205,7 +205,7 @@ Lands:
   `continue-on-error: true` removed. Becomes a required status
   check. Job now matrix-builds `--features all-vendors` on the
   self-hosted runner.
-- First green baseline on the RX 6700 XT runner (operator-confirmed
+- First green baseline on the original CI runner (operator-confirmed
   per the runbook); `tools/frame-pacing/budgets.toml` re-confirmed
   (18.3 ms p99, 1.04 ms σ).
 - `docs/observatory/phase-6-milestone-baseline.md`: first
@@ -357,7 +357,7 @@ follow-up PR before Engine Core v0.3:
 6. `engine.toml [upscaler]` runtime reader in engine-platform.
 7. `.github/workflows/ci.yml` `frame_pacing` job promoted from
    `continue-on-error: true` to required (ADR-047 §7); first green
-   RX 6700 XT baseline at `docs/observatory/phase-6-milestone-baseline.md`.
+   RDNA2-class GPU baseline at `docs/observatory/phase-6-milestone-baseline.md`.
 
 That PR's prerequisites are environmental — runner provisioning +
 SDK downloads + Git LFS setup — not engineering. When it lands, the
@@ -410,7 +410,7 @@ does not have:
   binaries. Git LFS setup for the bundled `temporal_upscaler_v1.onnx`
   model is environmental.
 - **PR 6.5 — Frame-pacing CI gate promotion.** Per ADR-047 §7 the
-  gate flips to required when the self-hosted RX 6700 XT runner
+  gate flips to required when the self-hosted GPU runner
   comes online + a first green baseline lands. The runbook at
   `docs/runbooks/frame-pacing-runner.md` is the provisioning record.
 
@@ -525,7 +525,7 @@ the prior addenda's deferred list:
    annotations.
 6. `.github/workflows/ci.yml` `frame_pacing` job promoted from
    `continue-on-error: true` to required (ADR-047 §7); first green
-   RX 6700 XT baseline at
+   RDNA2-class GPU baseline at
    `docs/observatory/phase-6-milestone-baseline.md`.
 7. `engine.toml` `phase = "6"` → `"6-closed"` (mirrors Phase 4's
    `"4-audited"` precedent); README v0.3 paragraph; this ADR's
@@ -533,7 +533,7 @@ the prior addenda's deferred list:
    commit hash.
 
 PR 8's environmental prerequisites are unchanged: self-hosted
-RX 6700 XT runner per `docs/runbooks/frame-pacing-runner.md`, DLSS
+RDNA2-class runner per `docs/runbooks/frame-pacing-runner.md`, DLSS
 Streamline 2.x + AMD FSR 4 + Intel XeSS 2 SDKs downloaded and
 licensed, `ort` native binaries installable, Git LFS configured.
 

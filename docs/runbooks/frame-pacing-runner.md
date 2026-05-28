@@ -16,7 +16,7 @@ stanza and consult the prior runbook for the operational details.
 | Component | Specification |
 |-----------|---------------|
 | GPU | **AMD Radeon RX 580** (Polaris 10, GFX8, 8 GiB GDDR5). The spec's named Recommended-tier hardware (Part XX.7 line 1587) and Phase 5 milestone target (line 1631). |
-| CPU | **Intel Core i7-6700** (Skylake, 4c/8t @ 3.4–4.0 GHz, AVX2 + FMA, no AVX-512, 8 MiB L3). |
+| CPU | **Intel Skylake** (4c/8t @ 3.4–4.0 GHz, AVX2 + FMA, no AVX-512, 8 MiB L3). |
 | Memory | **31 GiB DDR4**. |
 | Storage | NVMe + SATA SSD mix; sccache lives in `~/.cache/sccache/`. |
 | Network | Wired Ethernet preferred for any cargo registry fetches. |
@@ -47,7 +47,7 @@ Before running `just frame-pacing` for an authoritative number:
    should return only the bench's own PID once it's running.
 4. **Plug in (laptop only).** Battery operation triggers conservative
    CPU governor which inflates p99 and σ. Not relevant to the
-   developer's desktop i7-6700 but documented for completeness.
+   developer's desktop Skylake but documented for completeness.
 
 ## Standard scenario
 

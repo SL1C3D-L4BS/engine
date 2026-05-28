@@ -89,7 +89,7 @@ slot generation, error display. The wrapper has no integration test
 that constructs a `Device` (the workspace wgpu dep lacks backend
 features). The substantive verification of the renderer's GPU path
 is the frame-pacing bench (`bin/engine-bench-frame-pacing`) once the
-self-hosted RX 6700 XT runner stands up.
+self-hosted GPU runner stands up.
 
 ## Dependencies
 

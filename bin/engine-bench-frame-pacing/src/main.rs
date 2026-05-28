@@ -25,7 +25,7 @@
 //!   per frame, exactly the trait-surface integration ADR-005 calls
 //!   for. The frame-time signal is the upscaler placeholder's cost +
 //!   the surrounding allocator + per-frame setup. GPU-backed numbers
-//!   land when the self-hosted RX 6700 XT runner stands up in PR 6
+//!   land when the self-hosted GPU runner stands up in PR 6
 //!   (ADR-047 §2).
 
 mod bench;

@@ -13,7 +13,7 @@
 # path; the contract holds for the GPU workload, not the oracle).
 #
 # CPU-oracle baseline on the developer's hardware (2026-05-27, 2
-# consecutive runs; Intel i7-6700 / Mesa 26.1.1):
+# consecutive runs; Intel Skylake 4c/8t / Mesa 26.1.1):
 #   - Run 1: mean=83.6 ms  p99=87.97 ms  σ=1.354 ms
 #   - Run 2: mean=83.5 ms  p99=88.02 ms  σ=1.400 ms
 # These numbers measure the CPU oracle's per-frame cost (the

@@ -291,7 +291,7 @@ quality = "performance" | "balanced" | "quality" | "ultra-quality"
 - CI:
   - The gate job tests with `--no-default-features`.
   - The self-hosted GPU runner step (PR 6) runs with `--features
-    all-vendors` and exercises the real cascade on the RX 6700 XT
+    all-vendors` and exercises the real cascade on the original CI runner
     (FSR path active, DLSS/XeSS skipped due to GPU brand).
 - Telemetry (ADR-010): `SPAN "render.upscale"`,
   `COUNTER "render.upscale.skipped"` per provider,

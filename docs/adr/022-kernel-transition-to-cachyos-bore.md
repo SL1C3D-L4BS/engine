@@ -69,7 +69,7 @@ refinement, not a contradiction of the spec's intent.
 - No engine code depends on kernel-specific behaviour; the
   engine runs on any modern Linux kernel (5.15+).
 - The frame-pacing CI gate (ADR-047) runs on the self-hosted
-  RX 6700 XT runner; that runner's kernel is independently
+  RDNA2-class runner; that runner's kernel is independently
   chosen for measurement stability (Linux LTS for the runner).
   The dev workstation's kernel choice does not affect CI.
 

@@ -22,7 +22,7 @@ BRDF).
 
 Phase 6 PR 3 turns the no-op `record()` bodies into real wgpu calls.
 This is the "first visible image" PR — at PR 3's end, an
-`engine-bench-frame-pacing` invocation on the RX 6700 XT runner
+`engine-bench-frame-pacing` invocation on the original CI runner
 should rasterize a real scene through the deferred pipeline.
 
 The work is contained: ADR-039 gives the graph; ADR-049 gives the
@@ -209,7 +209,7 @@ CPU oracle equivalent (`testbed/engine-raster/src/scene.rs`'s
   via CPU oracle + GPU path and asserts pixel parity at ADR-046's
   thresholds (1/255 channel, p99 ≤ 1%).
 - The pipeline cache (ADR-063) sees 5 pipeline-construction misses on
-  first frame: ~50 ms total on the RX 6700 XT runner. PR 6's
+  first frame: ~50 ms total on the original CI runner. PR 6's
   frame-pacing metrics report frame 0 separately.
 - A new `crates/engine-render/shaders/` directory hosts the five
   passes' Slang sources (`cull.slang`, `csm_shadow.slang`,
@@ -231,7 +231,7 @@ CPU oracle equivalent (`testbed/engine-raster/src/scene.rs`'s
   module emits the right `DepthStencilState` for every geometry
   pass; the convention is one place.
 - **`Rgba16Float` motion+depth is 8 B/pixel — at 4K, the G-buffer is
-  192 MiB before tile compression.** RX 6700 XT has 12 GiB VRAM,
+  192 MiB before tile compression.** RDNA2-class GPU has 12 GiB VRAM,
   fine; lower-tier hardware (the RX 580 milestone) at 8 GiB starts
   to feel it. Mitigation: ADR-045's bindless heap reports
   texture-VRAM usage; if PR 6's bench shows >50% VRAM on the RX 580,
@@ -280,7 +280,7 @@ CPU oracle equivalent (`testbed/engine-raster/src/scene.rs`'s
     quantization is within documented bounds.
 - The CI `determinism` job runs the new tests on x86-64 and aarch64
   (the CPU oracle path is the cross-arch reference; the GPU path
-  runs only on the self-hosted RX 6700 XT and is documented as
+  runs only on the self-hosted GPU runner and is documented as
   hardware-specific).
 - Manual runbook: after PR 3, render `combined_deferred_scene` via
   `engine-bench-frame-pacing --scene testbed/frame-pacing/scenes/v0.ron`

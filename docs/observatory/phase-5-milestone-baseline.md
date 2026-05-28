@@ -8,8 +8,8 @@ The Phase 5 milestone is **RX 580 @ 1440p @ 60 FPS** with
 `p99 ≤ 18.3 ms` and `σ ≤ 1.04 ms` (ADR-016 + ADR-047 §3). The PR-5
 baseline below is the **CPU-oracle** stand-in: it drives the bilinear
 upscaler placeholder over a synthetic HDR gradient (1280×720 →
-2560×1440) per frame. GPU-backed numbers land when the self-hosted RX
-6700 XT runner stands up per ADR-047 §2 — until then the baseline is
+2560×1440) per frame. GPU-backed numbers land when the self-hosted
+GPU runner stands up per ADR-047 §2 — until then the baseline is
 informational and the CI gate is `continue-on-error: true` per
 ADR-047 §7.
 
@@ -56,7 +56,7 @@ end-to-end — owned arg parser, owned JSON report, p99/σ stats,
 budgets-file evaluation, gate verdict — even though the workload is
 order-of-magnitude different from the eventual GPU workload. PR 6
 swaps the synthetic gradient for the full `combined_deferred_scene`
-CPU oracle; both paths run on the dev machine. The RX 6700 XT runner
+CPU oracle; both paths run on the dev machine. The RDNA2-class runner
 runs the GPU path and produces the gate-of-record numbers.
 
 ## How to refresh
@@ -90,8 +90,8 @@ changes. PR 6 also activates `tools/frame-pacing/budgets.toml` as the
 default gate file in CI (still `continue-on-error: true` until the
 runner is attached).
 
-When the self-hosted RX 6700 XT runner is provisioned:
-1. Register it as `self-hosted-gpu-rx6700xt` per the runbook
+When the self-hosted GPU runner is provisioned:
+1. Register it as `self-hosted-gpu` per the runbook
    (`docs/runbooks/frame-pacing-runner.md`).
 2. Drop `continue-on-error: true` from `.github/workflows/ci.yml`.
 3. Mark the `frame_pacing` job as a required status check on the
@@ -103,10 +103,11 @@ quick-check; the runner's GPU numbers are the gate of record.
 
 ## Phase 5.5 re-baseline appendix (ADR-070, 2026-05-27)
 
-The self-hosted RX 6700 XT runner described above was never
+The self-hosted GPU runner described above was never
 provisioned. ADR-070 supersedes the runner-based gate with a local
-`just frame-pacing` recipe on the developer's actual hardware (Intel
-i7-6700 / AMD RX 580 / Mesa 26.1.1 / `linux-cachyos-bore`) — the
+`just frame-pacing` recipe on the developer's actual hardware
+(Skylake 4c/8t @ 3.4 GHz / AMD RX 580 / Mesa 26.1.1 /
+`linux-cachyos-bore`) — the
 spec's named Recommended-tier hardware (Part XX.7 line 1587) and the
 Phase 5 milestone target (line 1631).
 

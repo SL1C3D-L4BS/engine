@@ -54,17 +54,17 @@ reproducible and any change to the fixture itself is reviewable.
 ### 2. Hardware envelope — self-hosted GPU runner
 
 The gate runs on a self-hosted CI runner with an actual GPU. Initial
-hardware: **AMD Radeon RX 6700 XT** (Mesa RADV, Vulkan 1.3,
-RDNA 2). The RX 6700 XT is one tier above the RX 580 milestone
+hardware: **an RDNA2-class GPU** (Mesa RADV, Vulkan 1.3,
+RDNA 2). The RDNA2-class GPU is one tier above the RX 580 milestone
 target and represents a stable, widely-available reference. It is
 *not* the RX 580 (those are scarce and price-volatile for CI use);
-the gate's targets are calibrated to the RX 6700 XT and a separate
+the gate's targets are calibrated to the original CI runner and a separate
 "milestone bench" on actual RX 580 hardware runs as a nightly job.
 
 GitHub-hosted runners are not used for this gate — they have
 neither dedicated GPUs nor latency stability.
 
-CPU envelope: AMD Ryzen 7 5700G (8c/16t, locked frequencies).
+CPU envelope: an 8c/16t Zen 3 proxy CPU (locked frequencies).
 Memory: 32 GiB DDR4-3200 (2× 16 GiB, dual channel).
 OS: Arch Linux on `linux-cachyos-bore` kernel per spec Part XVIII.4.
 
@@ -102,7 +102,7 @@ pass, a more expensive material model, etc.), the PR author chooses:
 
 **Option A — Reduce default quality preset.** Lower the default
 post-FX settings (e.g. drop bloom kernel from 5 mips to 4) so the
-RX 6700 XT preset still hits 18.3 / 1.04. The new high-quality
+RDNA2-class GPU preset still hits 18.3 / 1.04. The new high-quality
 work is gated behind a quality preset. The fixture scene runs at the
 default preset, so the gate passes.
 
@@ -113,7 +113,7 @@ ADR is required to revise the spec-stated thresholds. ADR-047A,
 rollback plan. The CI gate file (`tools/frame-pacing/budgets.toml`)
 is updated as part of that ADR's PR.
 
-**Option C — Re-baseline on different hardware.** If the RX 6700 XT
+**Option C — Re-baseline on different hardware.** If the original CI runner
 is genuinely too old, the runner hardware moves up a tier. Same
 process as Option B (an ADR records the move; budgets re-calibrate).
 
@@ -126,7 +126,7 @@ A new job in `.github/workflows/ci.yml`:
 
 ```yaml
 frame_pacing:
-  runs-on: self-hosted-gpu-rx6700xt
+  runs-on: self-hosted-gpu
   if: ${{ contains(github.event.head_commit.modified, 'crates/engine-render')
        || contains(github.event.head_commit.modified, 'crates/engine-gpu')
        || contains(github.event.head_commit.modified, 'engine.toml') }}
@@ -221,9 +221,9 @@ ADR-070 (Phase 5.5 C.2 — frame-pacing re-baseline on the user's
 RX 580 + local-only gate) supersedes the operational sections of
 this ADR:
 
-- §2 (hardware envelope) — the self-hosted RX 6700 XT runner was
+- §2 (hardware envelope) — the self-hosted GPU runner was
   never provisioned; ADR-070 §1 re-baselines on the developer's
-  i7-6700 + RX 580 (the spec's named Recommended-tier hardware).
+  the developer's Skylake CPU + RX 580 (the spec's named Recommended-tier hardware).
 - §3 (thresholds) — the spec values stand as the future-tier
   contract; ADR-070 §2 documents the measured baseline + the
   McKenney σ-floor analysis that frames the achievable envelope on

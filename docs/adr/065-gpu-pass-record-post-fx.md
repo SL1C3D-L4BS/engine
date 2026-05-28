@@ -101,7 +101,7 @@ Hammersley + GGX importance-sampled integration.
 The LUT is content-addressed (BLAKE3-hashed); if the same LUT was
 baked in a prior run it is loaded from the user's cache directory
 (`$XDG_CACHE_HOME/sliced-engine/brdf_lut.bin`) instead of re-baked.
-First-run bake cost: ~80 ms on the RX 6700 XT runner.
+First-run bake cost: ~80 ms on the original CI runner.
 
 ### 4. TAA (`TaaPass`)
 
@@ -246,7 +246,7 @@ TonemapUniforms (Group 1, 16 B):
   Phase 6 ships half-res `R16Float`; downgrade is a Phase 7+
   optimization decision.
 - **Bloom mip chain at 4K = ~24 MiB total mip storage.** Acceptable
-  on the RX 6700 XT; tight on RX 580 (8 GiB) when combined with the
+  on the original CI runner; tight on RX 580 (8 GiB) when combined with the
   G-buffer's 192 MiB. Mitigation: same as ADR-064 — if PR 6's bench
   shows VRAM pressure, drop bloom to 4 mip levels in a follow-up.
 - **Disk-cached BRDF LUT** introduces a multi-machine-cache concern.

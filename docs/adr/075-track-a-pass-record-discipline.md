@@ -164,7 +164,7 @@ smoke test is fast feedback, (c) the WGSL declarations are stable.
   bind groups keyed by `(view-identity-tuple)`; for Phase 5.5 the
   per-frame build is fine — the 10 active passes × ~30 µs each ≈
   300 µs of CPU per frame, well within the 16.6 ms frame budget at
-  60 FPS on i7-6700.
+  60 FPS on the developer's Skylake CPU.
 
 ### 5. Attachment-view plumbing through the render graph
 
@@ -336,7 +336,7 @@ The A.2 work splits into:
   out-of-tree `Pass` implementer. None exist today; the test stubs
   are the only call sites. Risk is bounded.
 - **Per-frame bind-group construction has CPU cost.** Bounded
-  measurement: ~30 µs per pass on Skylake i7-6700 × 10 active passes
+  measurement: ~30 µs per pass on Skylake 4c/8t × 10 active passes
   = ~300 µs per frame. Within the 16.6 ms budget. Phase 6+ may cache
   bind groups by view-identity tuple if measurement shows it matters.
 - **Naga reflection auto-derive is deferred.** The hand-mirroring of
