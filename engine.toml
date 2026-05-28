@@ -56,28 +56,39 @@ spec_version = "2.0"
 # (5) OwnedOnnxTemporal cascade reservation + with_phase6_defaults()
 # (ADR-066 + ADR-067).
 #
-# Deferred to follow-ups that require the self-hosted RX 6700 XT
-# runner + vendor SDK downloads: the GPU `record()` body
-# implementations + Slang shader sources (ADR-064 + ADR-065 GPU
-# halves); the frame-pacing CI gate promotion from informational to
-# required (ADR-047 §7); the vendor SDK FFI bindings (ADR-066
-# crate/feature scaffolding); the `ort` ONNX-runtime binding
-# (ADR-067 §1) + ADR-051 deviation entry.
+# Reconciled 2026-05-27 (ADR-069): the engine's "Phase 6" naming
+# absorbed work that the spec considered Phase 5 closure (GPU
+# binding + shader sources + bind-group authoring), while spec
+# Phase 6 (3DGS + neural rendering) was untouched. The in-progress
+# work is renamed to **Phase 5.5 — Track A GPU binding closure**.
+# Spec Phase 6 opens with a fresh track after Engine Core v0.3 ships.
 #
-# Engine Core v0.3 tag pending the runner-gated work completion.
+# Phase 5.5 progress (2026-05-27):
+# - ADR-069 (engine vs spec phase reconciliation) — landed.
+# - ADR-074 (wgpu Vulkan backend for Polaris GFX8 / RADV) — landed;
+#   `wgpu/vulkan` feature enabled, push-constant limit fix, the
+#   workspace can reach the user's RX 580 through Mesa RADV.
+# - ADR-075 (Track-A pass `record()` implementation discipline) —
+#   landed; the auto-derive bootstrap (A.2a) means all 12 pipelines
+#   construct cleanly via WGSL reflection; explicit bindgroups/
+#   layouts can replace auto-derive pass-by-pass as A.2c cleanup.
+# - A.2b-i (engine-gpu BindGroup + MRT/depth pass surface) — landed
+#   with the GPU compute round-trip test as proof.
 #
-# Phase 6 sub-PRs landed later 2026-05-27 (commits `bb14ac4` PR 5.5,
-# `d307c4b` PR 3.5, `f7bf287` PR 4.5) bringing every CI-validatable
-# deliverable into the tree: the engine-upscale-vendor crate
-# scaffold + cargo feature matrix + ADR-051 ORT deviation entry,
-# plus 11 WGSL shaders (5 geometry/lighting + 6 post-FX inc. BRDF
-# LUT bake) cross-checked against the CPU oracle constants. The
-# only remaining gap to v0.3 is the single runner-validated PR
-# that wires the shaders into engine-gpu pipeline construction +
-# fills the 10 pass `record()` bodies + lands the 3+3 pixel-parity
-# fixtures + the vendor SDK / ORT binding linkage + the frame-pacing
-# gate flip. See ADR-068's "Remaining work for v0.3" addendum.
-phase = "6"
+# Phase 5.5 remaining work for Engine Core v0.3:
+# - A.2b-ii (per-pass record() body wiring) — bind-group construction
+#   + transient resource pool + real dispatches.
+# - A.3 (six pixel-parity oracle fixtures) — cross-validate the GPU
+#   path against the CPU oracle per ADR-046.
+# - A.4 (OwnedOnnxTemporal real impl + starter ESPCN model) — per
+#   ADR-067, with the CPU backend (ROCm dropped GFX8).
+# - A.5 (FSR 2 spatial fallback) — the Polaris-compatible vendor
+#   provider per ADR-076 (to be filed).
+# - A.6 (engine-config crate refactor) — PR 7.5 cleanup #15.
+# - C.1 + C.2 (frame-pacing re-baseline + CI gate redesign per
+#   ADR-070, to be filed).
+# - v0.3 tag.
+phase = "5.5"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

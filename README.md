@@ -254,7 +254,21 @@ PR 6 also closes two audit follow-ups:
 
 **Engine Core v0.2** is tagged at the close of Phase 5.
 
-Phase 6 (RENDERING FOUNDATION, Track A, Part 2) contract-side closed
+**Phase 5.5 (Track A GPU binding closure) — in progress.** A
+pre-Track-A audit (2026-05-27) reconciled the engine's prior "Phase 6"
+naming with the spec: the in-progress work is GPU-binding closure for
+spec Phase 5 (deferred PBR on RX 580 milestone), not the spec's true
+Phase 6 (3DGS + neural rendering). ADR-069 documents the rename;
+ADR-074 activated the `wgpu/vulkan` backend so Mesa RADV / Polaris GFX8
+— the spec's named Recommended-tier hardware — is reachable; ADR-075
+documents the per-pass `record()` body discipline; A.2a's auto-derive
+bootstrap proves all 12 Track-A pipelines validate on the user's RX 580
+end-to-end. The original Phase 6 PR plan (ADR-068's six-PR slicing,
+including the seven landed PRs below) is preserved as the Phase 5.5
+engineering record. Spec Phase 6 opens with Track B after Engine Core
+v0.3 ships.
+
+Phase 6 (renamed to Phase 5.5 per ADR-069) contract-side closed
 2026-05-27 across the ADR-068 six-PR slicing:
 
 - **Pre-Phase-6 design sweep.** ADRs 061–068 lock the GPU pass

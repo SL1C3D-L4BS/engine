@@ -606,3 +606,33 @@ test + clippy `-D warnings` + fmt-check + cargo-deny).
   `bin/engine-bench-frame-pacing/src/budgets.rs` and
   `crates/engine-script/src/breakpoints_toml.rs`. Lifting a shared
   `engine-config` micro-crate is a separate cleanup PR.
+
+## Addendum (2026-05-27, fifth pass) — Phase 5.5 reconciliation (ADR-069)
+
+A pre-Track-A audit (plan
+`~/.claude/plans/radiant-enchanting-cocoa.md`) surfaced three drifts:
+the engine's "Phase 6" naming had absorbed Phase 5 closure work
+without delivering the spec's Phase 6 (3DGS + neural rendering); the
+workspace wgpu dep had no backend feature enabled; the frame-pacing
+CI gate referenced hardware the developer didn't own.
+
+ADR-069 (engine-vs-spec phase reconciliation) renames the
+in-progress "Phase 6" work to "Phase 5.5 — Track A GPU binding
+closure" and reserves the spec "Phase 6" name for the post-v0.3
+work (3DGS + neural rendering + working vendor upscaler cascade).
+ADR-074 (wgpu Vulkan backend activation) enables `wgpu/vulkan` so
+Mesa RADV / Polaris GFX8 — the spec's named Recommended-tier
+hardware — is reachable. ADR-075 (Track-A pass `record()`
+implementation discipline) documents the per-pass record body
+template + the bind-group module organisation.
+
+This ADR-068's six-PR slicing remains valid as the engineering plan
+for what is now Phase 5.5. The PR numbering (PR 1 through PR 8 +
+sub-PRs + 7.5 code-review follow-up) is preserved in commit history;
+the rename reframes them as Phase 5.5 deliverables, not Phase 6.
+
+The post-v0.3 work that opens spec Phase 6 (3DGS asset type +
+radix-sort compute pass + composite pass + trained ONNX temporal
+upscaler v1 + vendor SDK linkage) is tracked in ADR-077 and the
+companion plan; it lands on a per-deliverable basis after Engine
+Core v0.3 ships.
