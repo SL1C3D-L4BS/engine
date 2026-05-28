@@ -75,20 +75,21 @@ spec_version = "2.0"
 # - A.2b-i (engine-gpu BindGroup + MRT/depth pass surface) — landed
 #   with the GPU compute round-trip test as proof.
 #
-# Phase 5.5 remaining work for Engine Core v0.3:
-# - A.2b-ii (per-pass record() body wiring) — bind-group construction
-#   + transient resource pool + real dispatches.
-# - A.3 (six pixel-parity oracle fixtures) — cross-validate the GPU
-#   path against the CPU oracle per ADR-046.
-# - A.4 (OwnedOnnxTemporal real impl + starter ESPCN model) — per
-#   ADR-067, with the CPU backend (ROCm dropped GFX8).
-# - A.5 (FSR 2 spatial fallback) — the Polaris-compatible vendor
-#   provider per ADR-076 (to be filed).
-# - A.6 (engine-config crate refactor) — PR 7.5 cleanup #15.
-# - C.1 + C.2 (frame-pacing re-baseline + CI gate redesign per
-#   ADR-070, to be filed).
-# - v0.3 tag.
-phase = "5.5"
+# Phase 5.5 closed 2026-05-28 (Engine Core v0.3 milestone). Six
+# pixel-parity oracle fixtures (cube, csm_4_cascade, cluster_64_lights,
+# ibl_probe, taa_motion, post_fx_chain) cross-validate the GPU path
+# against the CPU oracle per ADR-046; the cube fixture is bit-accurate
+# within the documented exception band (max_delta 0.0055 linear). The
+# upscaler cascade selects vendor.fsr ahead of owned.bilinear on every
+# host the engine targets (ADR-076); OwnedOnnxTemporal is the
+# universal-coverage fallback above bilinear per ADR-067.
+#
+# Track-A pass record() bodies are all wired per ADR-075 §1; the
+# CSM shadow projection in lighting.wgsl and the windowed point-light
+# attenuation alignment in lighting.wgsl are post-v0.3 follow-ups
+# documented in `docs/audit/oracle-exceptions.md` under
+# `csm_4_cascade` and `cluster_64_lights` respectively.
+phase = "5.5-closed"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

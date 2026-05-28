@@ -254,19 +254,43 @@ PR 6 also closes two audit follow-ups:
 
 **Engine Core v0.2** is tagged at the close of Phase 5.
 
-**Phase 5.5 (Track A GPU binding closure) — in progress.** A
-pre-Track-A audit (2026-05-27) reconciled the engine's prior "Phase 6"
-naming with the spec: the in-progress work is GPU-binding closure for
-spec Phase 5 (deferred PBR on RX 580 milestone), not the spec's true
-Phase 6 (3DGS + neural rendering). ADR-069 documents the rename;
-ADR-074 activated the `wgpu/vulkan` backend so Mesa RADV / Polaris GFX8
-— the spec's named Recommended-tier hardware — is reachable; ADR-075
-documents the per-pass `record()` body discipline; A.2a's auto-derive
-bootstrap proves all 12 Track-A pipelines validate on the user's RX 580
-end-to-end. The original Phase 6 PR plan (ADR-068's six-PR slicing,
-including the seven landed PRs below) is preserved as the Phase 5.5
-engineering record. Spec Phase 6 opens with Track B after Engine Core
-v0.3 ships.
+**Engine Core v0.3 (Phase 5.5 — Track A GPU binding closure) — closed
+2026-05-28.** A pre-Track-A audit (2026-05-27) reconciled the engine's
+prior "Phase 6" naming with the spec: the in-progress work was
+GPU-binding closure for spec Phase 5 (deferred PBR on RX 580
+milestone), not the spec's true Phase 6 (3DGS + neural rendering).
+v0.3 ships:
+
+- **ADR-069 / ADR-074 / ADR-075** — the phase reconciliation, the
+  Polaris-targeted `wgpu/vulkan` backend activation, and the per-pass
+  `record()` discipline.
+- **All 10 Track-A pass `record()` bodies wired** per ADR-075 §1
+  (CullPass, CsmShadowPass, ClusterLightPass, GBufferPass, SsaoPass,
+  IblPass, LightingAccumulationPass, TaaPass, BloomPass, TonemapPass);
+  BloomPass dispatches the full 5-mip extract + 4-down + 4-up chain;
+  CSM + GBuffer consume CullPass output via
+  `multi_draw_indexed_indirect_count`.
+- **Six pixel-parity oracle fixtures** under
+  `crates/engine-render/tests/pixel_parity/` cross-validate the GPU
+  path against the CPU oracle per ADR-046: `cube`, `csm_4_cascade`,
+  `cluster_64_lights`, `ibl_probe`, `taa_motion`, `post_fx_chain`.
+  Slice 8 of the cube fixture closed five engine-side formula
+  divergences (reverse-Z, ClusterUniforms padding, directional
+  lighting branch, GGX α-parameterisation, Narkowicz ACES) — the cube
+  fixture now sits at `max_delta 0.0055 linear` (bit-accurate within
+  the documented exception band in `docs/audit/oracle-exceptions.md`).
+- **Upscaler cascade selects vendor.fsr** on every host the engine
+  targets (ADR-076). `OwnedOnnxTemporal::supports()` returns true
+  universally per the CPU-fallback contract; ADR-051 deviation entry 4
+  moves from *scaffold* to *active*.
+- **ADR-070 frame-pacing re-baseline** on the developer's actual
+  hardware (Skylake 4c/8t + RX 580 + Mesa 26.1.1); GitHub-Actions
+  `frame_pacing` runner removed in favour of the `just frame-pacing`
+  local recipe.
+
+Spec Phase 6 (3DGS + neural rendering) opens with Track B post-v0.3.
+The original Phase 6 PR plan (ADR-068's six-PR slicing) is preserved
+as the Phase 5.5 engineering record below.
 
 Phase 6 (renamed to Phase 5.5 per ADR-069) contract-side closed
 2026-05-27 across the ADR-068 six-PR slicing:

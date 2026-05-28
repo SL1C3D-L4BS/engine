@@ -636,3 +636,40 @@ radix-sort compute pass + composite pass + trained ONNX temporal
 upscaler v1 + vendor SDK linkage) is tracked in ADR-077 and the
 companion plan; it lands on a per-deliverable basis after Engine
 Core v0.3 ships.
+
+## Addendum (2026-05-28) — Phase 5.5 closure / Engine Core v0.3 tag
+
+Phase 5.5 closed 2026-05-28. The remaining work tracked in the
+fourth-pass addendum closed via:
+
+- **A.3 (six pixel-parity oracle fixtures)** — all six landed under
+  `crates/engine-render/tests/pixel_parity/`. The cube fixture closed
+  five engine-side formula divergences in Slice 8 (reverse-Z, cluster
+  UBO padding, directional lighting branch, GGX α-parameterisation,
+  Narkowicz ACES tonemap) and now sits at `max_delta 0.0055 linear`
+  within the documented cube exception band. The remaining five
+  fixtures (`csm_4_cascade`, `cluster_64_lights`, `ibl_probe`,
+  `taa_motion`, `post_fx_chain`) are bounded by per-fixture exceptions
+  in `docs/audit/oracle-exceptions.md`. The two outstanding engine
+  gaps — CSM shadow projection in `lighting.wgsl` and the windowed
+  point-light attenuation alignment — are post-v0.3 follow-ups
+  documented in those exceptions.
+- **A.4 (OwnedOnnxTemporal real impl + starter ESPCN model)** —
+  `OwnedOnnxTemporal::supports()` returns true unconditionally; ADR-051
+  deviation entry 4 moves from *scaffold* to *active*. The model
+  artifact is content tracked separately under
+  `crates/engine-render/assets/onnx/` (Git-LFS; populated by a
+  follow-up content PR).
+- **A.5 (FSR 2 spatial fallback)** — ADR-076 lands as the Polaris-
+  compatible vendor provider; `VendorFsr::supports()` returns true
+  unconditionally; the in-tree EASU WGSL implementation is the
+  spatial path. The `fsr` cargo feature in `engine-upscale-vendor`
+  remains the SDK-bring-in flag for FSR 4 / tensor-accelerated
+  paths.
+- **C.1 + C.2 + C.3** — landed earlier in the Phase 5.5 session
+  (ADR-070 frame-pacing re-baseline, `just frame-pacing` local recipe,
+  ADR-069 phase reconciliation, README v0.3 paragraph).
+- **engine.toml** reads `phase = "5.5-closed"`.
+
+The 14 commits across three Phase 5.5 sessions are the engineering
+record of this closure. ADR-068 is now formally closed.
