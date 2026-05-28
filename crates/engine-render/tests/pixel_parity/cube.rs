@@ -108,13 +108,6 @@ fn push_vec4(buf: &mut Vec<u8>, v: [f32; 4]) {
     }
 }
 
-fn push_uvec3_pad(buf: &mut Vec<u8>, v: [u32; 3], pad: u32) {
-    for x in v.iter() {
-        push_u32(buf, *x);
-    }
-    push_u32(buf, pad);
-}
-
 /// Append a column-major mat4 as 16 little-endian `f32`.
 fn push_mat4(buf: &mut Vec<u8>, m: Mat4) {
     let cols = m.to_cols_array();
@@ -185,6 +178,23 @@ fn lighting_fullscreen(scene: &CubeParityScene) -> Vec<u8> {
 
 /// Cluster's `ClusterUniforms` (cluster_assign.wgsl:11 / lighting.wgsl:29).
 /// Same struct in both shaders; one UBO serves both.
+///
+/// WGSL host-shareable layout (uniform address space):
+/// ```text
+///   inv_view_projection : mat4x4<f32>   //   0..63   (align 16, size 64)
+///   light_count         : u32           //  64..67
+///   _pad0               : 12 bytes      //  68..79   (vec3<u32> requires align 16)
+///   grid_dim            : vec3<u32>     //  80..91
+///   z_near              : f32           //  92..95
+///   z_far               : f32           //  96..99
+///   _pad1               : 4 bytes       // 100..103  (vec2<f32> requires align 8)
+///   reserved            : vec2<f32>     // 104..111
+/// ```
+/// Total: 112 B. The 12-byte gap between `light_count` and `grid_dim`
+/// is required by WGSL §13.4 (`vec3<u32>` alignment is 16 even though
+/// size is 12); omitting it shifts every subsequent field. The Slice 4
+/// diagnostic surfaced this as the cluster shader reading garbage
+/// `grid_dim` → lighting computes OOB cell index → returns black.
 fn cluster_uniforms(scene: &CubeParityScene) -> Vec<u8> {
     let inv_view_proj = scene
         .camera
@@ -192,14 +202,18 @@ fn cluster_uniforms(scene: &CubeParityScene) -> Vec<u8> {
         .inverse()
         .unwrap_or(Mat4::IDENTITY);
     let mut buf = Vec::with_capacity(112);
-    push_mat4(&mut buf, inv_view_proj);
-    push_u32(&mut buf, 1); // light_count
-    push_uvec3_pad(&mut buf, [16, 9, 24], 0); // grid_dim (waste pad to match WGSL alignment)
-    push_f32(&mut buf, scene.camera.near);
-    push_f32(&mut buf, scene.camera.far);
-    push_f32(&mut buf, 0.0); // reserved
-    push_f32(&mut buf, 0.0); // reserved
-    pad_to(&mut buf, 112);
+    push_mat4(&mut buf, inv_view_proj); //                       offset   0..63
+    push_u32(&mut buf, 1); // light_count                        offset  64..67
+    pad_to(&mut buf, 80); // pad to vec3<u32> 16-byte alignment  offset  68..79
+    push_u32(&mut buf, 16); // grid_dim.x                        offset  80..83
+    push_u32(&mut buf, 9); // grid_dim.y                         offset  84..87
+    push_u32(&mut buf, 24); // grid_dim.z                        offset  88..91
+    push_f32(&mut buf, scene.camera.near); // z_near             offset  92..95
+    push_f32(&mut buf, scene.camera.far); // z_far               offset  96..99
+    pad_to(&mut buf, 104); // pad to vec2<f32> 8-byte alignment  offset 100..103
+    push_f32(&mut buf, 0.0); // reserved.x                       offset 104..107
+    push_f32(&mut buf, 0.0); // reserved.y                       offset 108..111
+    debug_assert_eq!(buf.len(), 112);
     buf
 }
 
@@ -844,4 +858,38 @@ fn seed_scene(harness: &ParityHarness, pool: &Pool, scene: &CubeParityScene) {
     queue.write_buffer(buffer_for(table, RID_SSAO_UBO), 0, &[0u8; 256]);
     queue.write_buffer(buffer_for(table, RID_IBL_UBO), 0, &[0u8; 96]);
     queue.write_buffer(buffer_for(table, RID_CSM_UBO), 0, &[0u8; 384]);
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// Lock the WGSL host-shareable layout for `ClusterUniforms`. The
+    /// cluster shader (`cluster_assign.wgsl`) and lighting shader
+    /// (`lighting.wgsl`) both read this UBO; an off-by-12 from missing
+    /// `vec3<u32>` alignment produces garbage `grid_dim` and the
+    /// lighting pass returns black for every cube pixel. No GPU device
+    /// required — pure byte-layout check.
+    #[test]
+    fn cluster_uniforms_layout_matches_wgsl_spec() {
+        let scene = CubeParityScene::default_v0();
+        let bytes = cluster_uniforms(&scene);
+        assert_eq!(bytes.len(), 112, "ClusterUniforms is 112 bytes");
+
+        // light_count at offset 64.
+        let light_count = u32::from_le_bytes(bytes[64..68].try_into().unwrap());
+        assert_eq!(light_count, 1, "light_count at offset 64");
+
+        // grid_dim at offset 80 (12-byte pad from light_count + alignment).
+        let gx = u32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        let gy = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
+        let gz = u32::from_le_bytes(bytes[88..92].try_into().unwrap());
+        assert_eq!((gx, gy, gz), (16, 9, 24), "grid_dim at offset 80");
+
+        // z_near at offset 92, z_far at offset 96.
+        let z_near = f32::from_le_bytes(bytes[92..96].try_into().unwrap());
+        let z_far = f32::from_le_bytes(bytes[96..100].try_into().unwrap());
+        assert!((z_near - scene.camera.near).abs() < 1e-6);
+        assert!((z_far - scene.camera.far).abs() < 1e-6);
+    }
 }
