@@ -52,8 +52,9 @@ use engine_gpu::{
 use engine_raster::{Framebuffer, Rgba8};
 use engine_render::{
     BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, INDIRECT_DRAW_MAX_COUNT,
-    IblPass, LightingAccumulationPass, Phase6Pipelines, RenderGraph, ResourceId, SsaoPass, TaaPass,
-    TonemapPass, TransientResourceTable, bake_brdf_lut, build_all_phase6_pipelines, contracts,
+    IblPass, LightingAccumulationPass, Phase6Pipelines, RenderGraph, ResourceId, ResourceResolver,
+    SsaoPass, TaaPass, TonemapPass, TransientResourceTable, bake_brdf_lut,
+    build_all_phase6_pipelines, contracts,
 };
 
 // =============================================================================
@@ -318,7 +319,11 @@ impl ParityHarness {
                 usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
             },
         );
-        encoder.copy_texture_to_buffer(&pool.tonemapped, &buf, padded, height);
+        let tonemapped = pool
+            .table
+            .resolve_texture(RID_TONEMAPPED)
+            .expect("tonemap target registered in the transient pool");
+        encoder.copy_texture_to_buffer(tonemapped, &buf, padded, height);
         StagingBuffer {
             buffer: buf,
             padded_row: padded,
@@ -335,12 +340,17 @@ impl ParityHarness {
 /// Per-fixture transient resource pool. Owns every texture / buffer /
 /// sampler the 10-pass graph might look up, and registers them under
 /// the canonical [`ResourceId`]s in [`TransientResourceTable`].
+///
+/// The tonemap target is registered in `table` under [`RID_TONEMAPPED`];
+/// the readback path resolves through the table so [`TonemapPass`]
+/// (which reads the same id) sees the same texture and actually
+/// executes — without registration the resolver short-circuit silently
+/// skips the dispatch and the readback returns the texture's
+/// zero-initialised state.
 pub struct Pool {
     pub width: u32,
     pub height: u32,
     pub table: TransientResourceTable,
-    /// Tonemap output — held outside the table for the readback path.
-    pub tonemapped: Texture,
 }
 
 impl Pool {
@@ -392,7 +402,7 @@ impl Pool {
         table.register_texture(RID_TAA_HISTORY_NEXT, taa_history_next);
         table.register_texture(RID_TAA_RESOLVED, taa_resolved);
         table.register_texture(RID_BLOOM, bloom);
-        // tonemapped held separately — readback consumer needs `&Texture`.
+        table.register_texture(RID_TONEMAPPED, tonemapped);
 
         // Clone the BRDF LUT so the table owns it under the canonical id.
         // The harness retains the original; both `Texture` handles refer
@@ -491,7 +501,6 @@ impl Pool {
             width,
             height,
             table,
-            tonemapped,
         }
     }
 }
@@ -611,9 +620,12 @@ fn hdr_storage_target(device: &Device, label: &'static str, width: u32, height: 
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: contracts::LIT_COLOR_FORMAT, // Rgba16Float
+            // COPY_SRC supports the LIT readback diagnostic used by the
+            // cube parity test (Slice 7 lighting-shader verification).
             usage: TextureUsage::RENDER_ATTACHMENT
                 | TextureUsage::TEXTURE_BINDING
-                | TextureUsage::STORAGE_BINDING,
+                | TextureUsage::STORAGE_BINDING
+                | TextureUsage::COPY_SRC,
         },
     )
 }

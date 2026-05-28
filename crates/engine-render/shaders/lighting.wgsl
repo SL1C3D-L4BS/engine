@@ -168,9 +168,21 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     for (var i = 0u; i < cell.light_count; i = i + 1u) {
         let li = light_indices[cell.light_offset + i];
         let light = lights[li];
-        let to_light = light.position_radius.xyz - world_pos;
-        let dist_sq = dot(to_light, to_light);
         let r = light.position_radius.w;
+        // Light-type branch (ADR-064 §5):
+        //   r > 0 → point (or spot, treated as point here until the
+        //           cone-falloff lands)
+        //   r <= 0 → directional. The light's stored
+        //           `direction.xyz` points light → scene; the BRDF's
+        //           `l` input is surface → light, hence the negation.
+        //           Source-of-truth: `engine_raster::sample::CubeParityScene::render_cpu`,
+        //           which does the same negation.
+        let to_light = select(
+            -light.direction.xyz,
+            light.position_radius.xyz - world_pos,
+            r > 0.0,
+        );
+        let dist_sq = dot(to_light, to_light);
         if (r > 0.0 && dist_sq > r * r) {
             continue;
         }

@@ -25,49 +25,73 @@
 //!
 //! ## Engine-side issues uncovered by the cube diagnostic
 //!
-//! The Slice 4 diagnostic (per-region pixel counters + top-5 worst
-//! pixels) on the developer's RX 580 surfaced three issues. Slice 6
-//! fixed the most consequential one (root cause of "GPU output is
-//! fully black"); two remain for subsequent slices.
+//! The Slice 4 diagnostic surfaced three engine-side issues; Slices 5,
+//! 6, 7 each closed one. Slice 7 also fixed two infrastructure-side
+//! gaps that became observable once the engine produced non-zero
+//! output.
 //!
-//! 1. **(FIXED, Slice 6) Reverse-Z mismatch across the stack.** The
-//!    engine's depth comments and lighting shader's `depth <= 0.0`
-//!    sky-pixel check both assume reverse-Z (`near → z=1, far → z=0`),
-//!    `GBufferPass` clears the depth attachment to `0.0` (reverse-Z
-//!    far), but `engine_gpu`'s pipeline builder hardcoded
-//!    `depth_compare: LessEqual` (standard depth) **and**
-//!    `Camera::projection()` returned a standard-Z perspective matrix
-//!    via `Mat4::perspective_rh(near, far)`. The combined effect:
-//!    every fragment's standard-Z depth (`> 0`) failed the `LessEqual
-//!    0.0` test, depth stayed at the clear value, the lighting shader's
-//!    `depth <= 0.0` short-circuited every pixel to black. Slice 6
-//!    switched `engine_gpu` to `GreaterEqual` and made
-//!    `Camera::projection()` produce reverse-Z by swapping `near` and
-//!    `far` in [`Mat4::perspective_rh`]. The depth diagnostic in
-//!    [`cube_parity`] confirms the cube now writes ~391 reverse-Z
-//!    depth samples per render.
-//! 2. **`ClusterUniforms` WGSL std140 padding gap.** The struct's
-//!    `light_count : u32` lives at offset 64 + 4 = 68, but the next
-//!    field `grid_dim : vec3<u32>` needs 16-byte alignment per WGSL
-//!    spec — so `grid_dim` lands at offset 80, not 68. The cluster
-//!    cube fixture's `cluster_uniforms()` writer (this file) currently
-//!    skips the 12-byte gap; the resulting cluster grid dimensions are
-//!    read as garbage by `cluster_assign.wgsl`, so per-cell light
-//!    lookup in `lighting.wgsl` returns the wrong cell. Slice 5 closes
-//!    this gap.
-//! 3. **Lighting shader treats every light as a point light.**
-//!    `lighting.wgsl:171` does `to_light = light.position_radius.xyz -
-//!    world_pos`, ignoring `light.direction.xyz` + the `params.w`
-//!    light-type tag. A directional light written with `position_radius
-//!    = (0,0,0,0)` and `direction = (sun direction)` produces
-//!    `to_light = -world_pos`, which gives a position-derived BRDF
-//!    input rather than the documented light direction. For the cube
-//!    (centered at origin) the resulting `to_light` always points
-//!    INTO the cube, so `n_dot_l ≤ 0` for every visible face and the
-//!    cube is shaded black regardless of which face. Slice 7 closes
-//!    this gap.
+//! 1. **(FIXED, Slice 6) Reverse-Z mismatch across the stack.**
+//!    `engine_gpu`'s pipeline builder hardcoded `depth_compare:
+//!    LessEqual` (standard depth) and `Camera::projection()` returned a
+//!    standard-Z matrix, but the rest of the stack assumed reverse-Z
+//!    (`Clear(0.0)`, `depth <= 0.0` sky check). Every fragment failed
+//!    the depth test → depth stayed at the clear value → lighting
+//!    short-circuited every pixel to black. Slice 6 aligned both to
+//!    reverse-Z.
+//! 2. **(FIXED, Slice 5) `ClusterUniforms` WGSL std140 padding gap.**
+//!    The fixture's `cluster_uniforms()` writer omitted the 12-byte pad
+//!    `vec3<u32>` alignment requires after the `light_count : u32`
+//!    field. The cluster shader read garbage `grid_dim`, the lighting
+//!    shader's cell-index computation overflowed → `cells[OOB]` came
+//!    back as `(0, 0)` → no lights walked → black output. Slice 5
+//!    rewrote the writer with explicit offsets + a layout test.
+//! 3. **(FIXED, Slice 7) Lighting shader treated every light as a
+//!    point light.** `lighting.wgsl:171` did `to_light =
+//!    light.position_radius.xyz - world_pos`, ignoring
+//!    `light.direction.xyz`. The cube fixture's directional light has
+//!    `position_radius = (0, 0, 0, 0)`, so the BRDF input pointed from
+//!    each surface fragment toward the world origin (inside the cube),
+//!    giving `n_dot_l ≤ 0` for every visible face. Slice 7 added the
+//!    `r <= 0 → directional` branch (`to_light = -light.direction.xyz`)
+//!    matching `engine_raster::sample::CubeParityScene::render_cpu`'s
+//!    convention.
 //!
-//! The cube fixture's parity assertion tightens as each slice lands.
+//! ## Infrastructure-side fixes Slice 7 also surfaced
+//!
+//! 4. **(FIXED, Slice 7) Harness pool never registered
+//!    `RID_TONEMAPPED` in `TransientResourceTable`** — the tonemap
+//!    target lived only as a `Pool` field so [`copy_tonemap_to_staging`]
+//!    could readback it. As a result, `TonemapPass::record()`'s
+//!    `resolve_view(self.tonemapped)` returned `None` and the pass
+//!    silently short-circuited; the readback path read the texture's
+//!    zero-initialised state. The bug was masked while engine bugs 1–3
+//!    kept lighting at zero. Slice 7 registers the tonemap target in
+//!    the table and routes the readback through `resolve_texture`.
+//! 5. **(FIXED, Slice 7) Cube `material_index = 0` decoded to black
+//!    albedo.** `gbuffer.wgsl:96–106` bit-packs RGB albedo into the
+//!    `material_index` placeholder until ADR-044's bindless material
+//!    storage lands; `material_index = 0` → `mat_color = (0, 0, 0)` →
+//!    diffuse contribution vanishes regardless of light. Slice 7
+//!    encodes the [`CubeParityScene::material`] albedo `(0.8, 0.4, 0.2)`
+//!    as bit-packed `(204, 102, 51)` into `material_index`.
+//!
+//! ## Remaining parity gaps (post-Slice-7, deferred)
+//!
+//! - **Roughness mismatch.** `gbuffer.wgsl` hardcodes `roughness = 0.5`;
+//!   the CPU material uses `0.35`. The BRDF specular peak differs.
+//! - **TAA double-binding.** The harness binds [`RID_LIT`] to TaaPass's
+//!   `lit_color` *and* `ibl_contribution` arguments, so the TAA fetch
+//!   reads `lit + lit = 2*lit`. Until IBL has its own output texture
+//!   this is the harness's best 1-fixture approximation; the resulting
+//!   2× brightness inflation partially offsets the dimmer roughness.
+//! - Both gaps land in subsequent slices (likely bundled with the
+//!   bindless-material fixture upgrade so the rough material can move
+//!   to a per-material SSBO).
+//!
+//! Slice 7 lands the cube fixture at `both-lit = 391`, `max_delta ≈
+//! 0.64` (down from `0.68` post-Slice-6). The cube is now correctly
+//! identified as lit on both sides; the verdict tightens further as
+//! the deferred gaps close.
 
 use engine_gpu::{Buffer, BufferDesc, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder};
 use engine_math::Mat4;
@@ -254,13 +278,29 @@ fn light_record(scene: &CubeParityScene) -> Vec<u8> {
 
 /// One [`InstanceDraw`] (gbuffer.wgsl:17 + csm_shadow.wgsl) for the cube.
 /// 3×vec4 model affine + 4×u32 = 64 B.
-fn instance_draw_for_cube() -> Vec<u8> {
+///
+/// `material_index` is bit-packed RGB albedo in the shader's placeholder
+/// material-bake path (gbuffer.wgsl:96–106): each byte of the u32 is a
+/// channel divided by 255. Encoding the [`CubeParityScene`] material's
+/// albedo (0.8, 0.4, 0.2) → bytes (204, 102, 51) → u32 0x0033_66CC keeps
+/// the GPU's GBuffer albedo aligned to the CPU oracle. Without this
+/// alignment, the GPU base_color would be (0, 0, 0) and the BRDF's
+/// diffuse term would vanish.
+fn instance_draw_for_cube(scene: &CubeParityScene) -> Vec<u8> {
+    fn channel_byte(linear: f32) -> u32 {
+        (linear.clamp(0.0, 1.0) * 255.0 + 0.5) as u32
+    }
+    let r = channel_byte(scene.material.albedo.x);
+    let g = channel_byte(scene.material.albedo.y);
+    let b = channel_byte(scene.material.albedo.z);
+    let material_index = r | (g << 8) | (b << 16);
+
     let mut buf = Vec::with_capacity(64);
     // Identity 4×3 affine, encoded as 3 rows of `(axis.xyz, translation_i)`.
     push_vec4(&mut buf, [1.0, 0.0, 0.0, 0.0]); // x-axis | tx
     push_vec4(&mut buf, [0.0, 1.0, 0.0, 0.0]); // y-axis | ty
     push_vec4(&mut buf, [0.0, 0.0, 1.0, 0.0]); // z-axis | tz
-    push_u32(&mut buf, 0); // material_index
+    push_u32(&mut buf, material_index); // material_index → bit-packed albedo
     push_u32(&mut buf, 0); // instance_id
     push_u32(&mut buf, 0); // flags
     push_u32(&mut buf, 0); // reserved
@@ -826,7 +866,7 @@ fn seed_scene(harness: &ParityHarness, pool: &Pool, scene: &CubeParityScene) {
     queue.write_buffer(
         buffer_for(table, RID_INSTANCES_SSBO),
         0,
-        &instance_draw_for_cube(),
+        &instance_draw_for_cube(scene),
     );
 
     // Light record.
