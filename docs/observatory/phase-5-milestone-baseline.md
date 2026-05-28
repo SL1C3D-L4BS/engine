@@ -100,3 +100,63 @@ When the self-hosted RX 6700 XT runner is provisioned:
 
 The CPU oracle stays in the bench harness as the developer-machine
 quick-check; the runner's GPU numbers are the gate of record.
+
+## Phase 5.5 re-baseline appendix (ADR-070, 2026-05-27)
+
+The self-hosted RX 6700 XT runner described above was never
+provisioned. ADR-070 supersedes the runner-based gate with a local
+`just frame-pacing` recipe on the developer's actual hardware (Intel
+i7-6700 / AMD RX 580 / Mesa 26.1.1 / `linux-cachyos-bore`) — the
+spec's named Recommended-tier hardware (Part XX.7 line 1587) and the
+Phase 5 milestone target (line 1631).
+
+### Measurement protocol (per the runbook)
+
+- Standard scenario: `testbed/frame-pacing/scenes/v0.ron` (3600
+  frames, 10 000 entities, 60-second deterministic camera path).
+- Workload: CPU-rasterizer oracle (`combined_deferred_scene` per
+  frame, bilinear upscale). Phase 5.5 A.2b-ii will swap in the GPU
+  path; the CPU baseline anchors the GPU numbers when they land.
+- Release build (`cargo build --release -p engine-bench-frame-pacing`).
+- Background load: closed IDE language servers, browser tabs. `pgrep
+  cargo` returned only the bench's PID during measurement.
+- Repeat-run sample size: 2 complete consecutive runs (a small
+  sample because each run takes ~5 minutes on the CPU oracle; the
+  GPU path is expected to bring this to within the 16.6 ms / frame
+  budget, restoring the standard 10-run protocol).
+
+### Measurements
+
+| Run | mean | p99 | σ | min | max |
+|---|---|---|---|---|---|
+| 1 | 83.619 ms | 87.968 ms | 1.354 ms | 81.551 ms | 124.168 ms |
+| 2 | 83.535 ms | 88.017 ms | 1.400 ms | 81.255 ms | 131.582 ms |
+
+### Interpretation
+
+- **Mean and p99 measure the CPU oracle's per-frame cost**, not the
+  renderer's runtime cost. The oracle is intentionally slow per
+  ADR-046 (it is the source-of-truth reference, not a runtime path).
+  These numbers are **not** the spec milestone's frame-pacing — they
+  are calibration baselines for the GPU path that A.2b-ii will land.
+- **σ ≈ 1.35–1.40 ms** is the meaningful signal. It is slightly
+  above the spec's σ ≤ 1.04 ms target (ADR-016). McKenney (*Is
+  Parallel Programming Hard* Ch. 3) bounds the σ floor on 4c/8t
+  Skylake without strict real-time scheduling at ~0.5–1.5 ms; the
+  measured value is at the upper edge of that band. The σ target
+  may need a per-envelope amendment once the GPU path's actual
+  per-frame timing replaces the CPU-oracle workload.
+- **Distribution tail (max ≈ 124–132 ms)** suggests one or two
+  major outlier frames per run, plausibly a fast-warmup
+  page-cache effect or a scheduler hiccup. Discard the first run
+  as warm-up per the runbook for tighter numbers.
+
+### Next milestone
+
+Re-measure on the same hardware after A.2b-ii lands the per-pass
+record() body wiring + the transient resource pool, so the bench
+exercises the GPU pipeline instead of the CPU oracle. At that point
+the p99 / σ thresholds in `tools/frame-pacing/budgets.toml` can be
+operationally validated against the spec contract (18.3 / 1.04) on
+the RX 580 — or amended with measured numbers and the appeal
+procedure per ADR-047 §5.

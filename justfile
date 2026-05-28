@@ -175,6 +175,28 @@ shader-toolchain:
 shader-toolchain-update-golden:
     ENGINE_GOLDEN_WRITE=1 cargo test -p engine-shader --test reproducibility
 
+# Phase 5.5 frame-pacing on local hardware (ADR-070).
+#
+# Replaces the removed `frame_pacing` GitHub Actions job that
+# targeted a non-existent self-hosted RX 6700 XT runner. Runs the
+# canonical ADR-047 §1 v0 scene on whatever hardware the developer
+# is sitting at; the bench binary is unchanged.
+#
+# Usage:
+#   just frame-pacing                                      # default v0 scene
+#   just frame-pacing scene=testbed/frame-pacing/scenes/v0.ron
+#
+# Discipline (per docs/runbooks/frame-pacing-runner.md): minimise
+# background load, run at least 10 consecutive times before quoting
+# numbers, discard the first as warm-up, report the median.
+frame-pacing scene='testbed/frame-pacing/scenes/v0.ron':
+    cargo run --release -p engine-bench-frame-pacing -- --run \
+        --scene {{scene}} \
+        --output-path target/frame-pacing-latest.json
+    cargo run --release -p engine-bench-frame-pacing -- \
+        --gate target/frame-pacing-latest.json \
+        --budgets tools/frame-pacing/budgets.toml
+
 # Full pre-push gate.
 ci: build test lint fmt-check deny
     @echo "[ENGINE] CI gate passed"

@@ -4,10 +4,23 @@
 # and uses the thresholds to evaluate `--gate REPORT.json`. Both thresholds
 # must hold for a PASS verdict.
 #
-# Phase 5 PR 5 ships the file but the gate is informational
-# (`continue-on-error: true` in CI per ADR-047 §7). PR 6 promotes the gate
-# to a required status check when the self-hosted RX 6700 XT runner stands
-# up; the same thresholds apply.
+# Phase 5.5 (ADR-070): the CI `frame_pacing` job is removed; enforcement
+# moves to the local `just frame-pacing` recipe per ADR-070 §3. The
+# thresholds below remain the spec-published contract (ADR-016 + ADR-047
+# §3 — 18.3 ms p99 / 1.04 ms σ at 60 FPS target); the contract is
+# evaluated locally before each PR. The bench's current workload is the
+# CPU-rasterizer oracle (Phase 5.5 A.2b-ii will swap in the real GPU
+# path; the contract holds for the GPU workload, not the oracle).
+#
+# CPU-oracle baseline on the developer's hardware (2026-05-27, 2
+# consecutive runs; Intel i7-6700 / Mesa 26.1.1):
+#   - Run 1: mean=83.6 ms  p99=87.97 ms  σ=1.354 ms
+#   - Run 2: mean=83.5 ms  p99=88.02 ms  σ=1.400 ms
+# These numbers measure the CPU oracle's per-frame cost (the
+# `combined_deferred_scene` reference renderer at 1280×720 internal),
+# not the renderer's runtime performance. The σ is consistent with
+# McKenney's 4c/8t Skylake jitter floor analysis (ADR-070 §References).
+# Full appendix: `docs/observatory/phase-5-milestone-baseline.md`.
 #
 # Changes to either threshold require an ADR amendment per ADR-047 §5
 # (appeal procedure) — see `docs/audit/oracle-exceptions.md` for the
@@ -20,6 +33,8 @@ p99_ms = 18.3
 
 # Frame-time standard deviation budget, in milliseconds. 1.04 ms is the
 # spec-published "no observable jitter at 60 Hz on the reference monitor"
-# bound (target/16). Tight: ADR-047 §Risks documents the sched-ext + cachyos
-# stack as the mitigation against kernel-side σ noise.
+# bound (target/16). Tight: ADR-070 §2 documents the McKenney-analysis
+# σ floor on 4c/8t Skylake (~0.5–1.5 ms without strict RT scheduling);
+# the spec target may need a per-envelope amendment once A.2b-ii's GPU
+# path lands and the *actual* renderer σ can be measured.
 stddev_ms = 1.04

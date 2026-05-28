@@ -523,61 +523,18 @@ jobs:
         # without slangc see a graceful skip with a printed warning.
         run: cargo test -p engine-shader --test reproducibility
 
-  # ADR-047 frame-pacing CI gate — Phase 5 PR 6. Runs the Phase-5
-  # `bench.frame_pacing.v0` scenario on a self-hosted GPU runner and
-  # evaluates the p99 / σ thresholds against
-  # `tools/frame-pacing/budgets.toml` (ADR-016 + ADR-047 §3).
+  # Frame-pacing gate removed per ADR-070 (Phase 5.5 C.2 — 2026-05-27).
   #
-  # Pre-Phase-5 status (ADR-047 §7): the job runs with
-  # `continue-on-error: true` so a regression surfaces in PR comments
-  # without blocking merge. The job is **promoted to a required status
-  # check** when the runner is provisioned and the first green
-  # baseline lands. The promotion is a follow-up workflow PR — see
-  # `docs/runbooks/frame-pacing-runner.md`.
+  # ADR-047's original `frame_pacing` job referenced a
+  # `self-hosted-gpu-rx6700xt` runner that was never provisioned. The
+  # developer's actual hardware is the spec's named Recommended-tier
+  # hardware (RX 580 / Polaris GFX8, spec Part XX.7 line 1587) — the
+  # spec milestone hardware. Per ADR-070, frame-pacing measurement
+  # moves to a local `just frame-pacing` recipe; the bench binary is
+  # unchanged. CI continues to enforce build / test / clippy / fmt /
+  # deny on every push (the `gate` + `determinism` jobs above).
   #
-  # The runner pool is named `self-hosted-gpu-rx6700xt`; capacity
-  # planning, OS / driver pinning, and cold-spare procedure live in
-  # the runbook. The job is intentionally NOT path-filtered until the
-  # gate becomes required — Phase-5 closure wants the bench to run on
-  # every PR so the dev-side `--scene` reports stay calibrated against
-  # the same workload.
-  frame_pacing:
-    name: frame-pacing gate (ADR-047)
-    needs: gate
-    runs-on: self-hosted-gpu-rx6700xt
-    # ADR-047 §7: informational until the runner is provisioned and
-    # the first green RX-6700-XT baseline lands. Drop this line in the
-    # promotion PR.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run frame-pacing scenario (CPU oracle stand-in pre-GPU)
-        # Drives the deterministic v0 scene through the bench: the
-        # full deferred CPU oracle (combined_deferred_scene) per
-        # frame, bilinear upscale, owned JSON report. On the GPU
-        # runner the workload swaps to the GPU pipeline (Phase 6
-        # `record()` body land); the CLI surface is unchanged.
-        run: |
-          cargo run --release -p engine-bench-frame-pacing -- \
-              --run \
-              --scene testbed/frame-pacing/scenes/v0.ron \
-              --output-path /tmp/frame-pacing.json
-
-      - name: Evaluate gate
-        # `--gate` reads the report and bounds p99 + σ against the
-        # budgets file. In informational mode (PR-5 / PR-6 pre-runner)
-        # the binary returns 0 regardless of verdict — the verdict
-        # text lands in the job log for human review.
-        run: |
-          cargo run --release -p engine-bench-frame-pacing -- \
-              --gate /tmp/frame-pacing.json \
-              --budgets tools/frame-pacing/budgets.toml
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frame-pacing-report
-          path: /tmp/frame-pacing.json
-          retention-days: 30
+  # Restoration: if/when a second contributor joins, re-add the
+  # workflow stanza (the git history at ADR-070's commit preserves
+  # the prior wording) and provision a self-hosted runner labelled
+  # appropriately for the active hardware envelope.

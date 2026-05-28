@@ -214,3 +214,28 @@ bench.
   computed by the bench binary.
 - The ADR-016 stub gets a one-line update referencing this ADR
   (no behavioural change; the contract was already accepted).
+
+## Addendum (2026-05-27) — superseded in part by ADR-070
+
+ADR-070 (Phase 5.5 C.2 — frame-pacing re-baseline on the user's
+RX 580 + local-only gate) supersedes the operational sections of
+this ADR:
+
+- §2 (hardware envelope) — the self-hosted RX 6700 XT runner was
+  never provisioned; ADR-070 §1 re-baselines on the developer's
+  i7-6700 + RX 580 (the spec's named Recommended-tier hardware).
+- §3 (thresholds) — the spec values stand as the future-tier
+  contract; ADR-070 §2 documents the measured baseline + the
+  McKenney σ-floor analysis that frames the achievable envelope on
+  Skylake 4c/8t.
+- §6 (CI integration) — ADR-070 §3 removes the `frame_pacing` job
+  from `.github/workflows/ci.yml` and replaces it with a local
+  `just frame-pacing` recipe.
+- §7 (informational vs required) — resolved: the gate is local; CI
+  enforcement is not in play.
+
+§1 (standard scenario), §4 (strict regression band as discipline),
+and §5 (appeal procedure) stand. §5's appeal procedure is the
+mechanism by which future re-baselines amend ADR-070.
+
+This ADR is preserved as the engineering record of the prior plan.
