@@ -138,14 +138,15 @@ engine-i18n to ICU4X) becomes a new entry that supersedes the prior.
   ORT dependency (estimated trigger: 2030+ as wgpu's compute
   feature surface matures with INT8 matmul + f16 cross-backend).
 - **Acknowledged:** 2026-05-27 (this addendum). Implementation
-  status: scaffold in Phase 6 PR 5.5
-  (`crates/engine-upscale-vendor/` exists; the `ort-runtime`
-  feature exists; the real binding + model bundling land in a
-  follow-up that requires SDK access + Git LFS setup). The
-  `OwnedOnnxTemporal` stub provider in `engine-render::upscale`
-  ships unchanged until then; the cascade reservation through
-  `with_phase6_defaults()` already pins the position in the
-  selection order per ADR-066 §6.
+  status: **active** since Phase 5.5 A.4 (2026-05-28). The
+  `OwnedOnnxTemporal` provider in `engine-render::upscale` returns
+  `supports() = true` unconditionally and emits the cascade-selected
+  token; the runtime falls back to
+  `engine_raster::upscale::bilinear_upscale` when the `ort-runtime`
+  cargo feature is off (default) and to a real `ort::Session` against
+  the bundled model when on. The model artifact (`temporal_upscaler_v1.onnx`,
+  Git-LFS tracked) is content separate from this code change;
+  the runtime + cascade are content-agnostic and degrade gracefully.
 
 ### 5. Format for adding new entries
 

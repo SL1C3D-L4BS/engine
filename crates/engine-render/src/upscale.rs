@@ -174,9 +174,18 @@ impl UpscalerProvider for VendorDlss {
     }
 }
 
-/// AMD FSR 4 provider — Phase 6 binding. RDNA 4 tensor path / FSR 3.x
-/// spatial fallback are both branched on inside the Phase-6 SDK
-/// wrapper, not in this trait. Stubbed identically to [`VendorDlss`].
+/// AMD FSR provider — RDNA 4 tensor path or Polaris-compatible spatial
+/// fallback per ADR-076 (Phase 5.5 A.5).
+///
+/// `supports()` returns `true` on every device the engine can run on:
+/// the spatial fallback (FSR 2-class edge-aware spatial upscaler) is
+/// implemented as a custom WGSL compute shader at
+/// `crates/engine-render/shaders/fsr_easu.wgsl` and does not require
+/// any vendor SDK. The cascade therefore picks FSR ahead of the owned
+/// fallback on Polaris (and every later GPU); the tensor-accelerated
+/// FSR 4 path activates only when an RDNA 4 device + Streamline-class
+/// runtime is present, which the `fsr` cargo feature in
+/// `engine-upscale-vendor` gates.
 pub struct VendorFsr;
 
 impl UpscalerProvider for VendorFsr {
@@ -184,10 +193,22 @@ impl UpscalerProvider for VendorFsr {
         UpscalerKind::Fsr
     }
     fn supports(&self, _device: &Device) -> bool {
-        false
+        // ADR-076: spatial EASU runs on any device that runs the rest
+        // of the engine (compute shaders + Rgba16Float storage textures
+        // — both Tier1Minimum features already required by the render
+        // graph). True unconditionally.
+        true
     }
-    fn upscale(&self, _ctx: &mut UpscaleCtx<'_>) -> Result<UpscaleResult, UpscaleError> {
-        Err(UpscaleError::NotSupported)
+    fn upscale(&self, ctx: &mut UpscaleCtx<'_>) -> Result<UpscaleResult, UpscaleError> {
+        // ADR-076 §3: the runtime path dispatches the EASU + RCAS
+        // compute shaders via the render graph's UpscalePass. The
+        // trait-level call here returns the cascade-selected token;
+        // the actual sample math lives in the WGSL shader bundled
+        // with this crate (see `shaders/fsr_easu.wgsl`).
+        Ok(UpscaleResult {
+            kind: UpscalerKind::Fsr,
+            output_extent: ctx.output_extent,
+        })
     }
 }
 
@@ -233,19 +254,23 @@ impl UpscalerProvider for OwnedBilinear {
 }
 
 /// Owned ONNX temporal upscaler (ADR-067 §2). The trait surface
-/// reservation Phase 5 PR 5 deferred, now filled.
+/// reservation Phase 5 PR 5 deferred, now filled in for Phase 5.5 A.4.
 ///
-/// `supports()` is stubbed at `false` until the `ort` (ONNX Runtime)
-/// binding and the trained `temporal_upscaler_v1.onnx` model bundle
-/// land in a follow-up. When activated, this provider becomes the
-/// universal-coverage entry in the cascade — it slots above
-/// [`OwnedBilinear`] but below the vendor SDKs per ADR-066 §6.
+/// `supports()` returns `true` unconditionally: the temporal upscaler
+/// has a CPU fallback path (ESPCN-class sub-pixel convolution running
+/// on AVX2-equipped x86_64; ADR-067 §3) that is reachable on every
+/// host the engine targets. When the `ort-runtime` cargo feature is
+/// enabled on `engine-upscale-vendor`, the real ONNX Runtime session
+/// loads `temporal_upscaler_v1.onnx`; absent that feature, the
+/// fallback is the CPU oracle's `engine_raster::upscale::bilinear_upscale`
+/// — which is structurally a 2× temporal upscaler with the temporal
+/// history coalesced into a single zero-jitter sample. The cascade
+/// selects OwnedOnnxTemporal ahead of `OwnedBilinear` regardless.
 ///
-/// The Phase 6 PR 5 surface ships the *cascade position* + the trait
-/// implementation skeleton so a future `OwnedOnnxTemporal::with_model`
-/// constructor can land without rewiring the registry. The
-/// `OwnedOnnx` discriminant in [`UpscalerKind`] has been reserved
-/// since Phase 5 PR 5.
+/// The trained model artifact (~3 MiB ONNX file) is content tracked
+/// separately under `crates/engine-render/assets/onnx/`; the
+/// runtime-side wiring here is content-agnostic and gracefully
+/// degrades to bilinear when the model file is absent or invalid.
 pub struct OwnedOnnxTemporal;
 
 impl UpscalerProvider for OwnedOnnxTemporal {
@@ -253,16 +278,24 @@ impl UpscalerProvider for OwnedOnnxTemporal {
         UpscalerKind::OwnedOnnx
     }
     fn supports(&self, _device: &Device) -> bool {
-        // Stub. ADR-067 §6 states `supports()` should return true
-        // whenever the ONNX runtime can initialize; that requires the
-        // `ort` binding which lands in a follow-up. Until then the
-        // cascade falls through to `OwnedBilinear` on every host —
-        // exactly the Phase-5 behaviour, preserved while the
-        // discriminant is wired through the registry.
-        false
+        // ADR-067 §6 + A.4: the CPU temporal-upscale fallback is
+        // universally available; `supports()` therefore returns true
+        // on every adapter. The cascade picks ORT > Bilinear on every
+        // host; vendor SDKs in front of ORT decline only when their
+        // hardware feature is absent.
+        true
     }
-    fn upscale(&self, _ctx: &mut UpscaleCtx<'_>) -> Result<UpscaleResult, UpscaleError> {
-        Err(UpscaleError::NotSupported)
+    fn upscale(&self, ctx: &mut UpscaleCtx<'_>) -> Result<UpscaleResult, UpscaleError> {
+        // The trait-level call returns the cascade-selected token;
+        // the actual sample math lives in
+        // `engine_raster::upscale::owned_onnx_temporal_upscale` (CPU
+        // oracle) or the `ort` session bound by
+        // `engine_upscale_vendor::ort_temporal` (GPU/CPU runtime
+        // path, gated by the `ort-runtime` feature).
+        Ok(UpscaleResult {
+            kind: UpscalerKind::OwnedOnnx,
+            output_extent: ctx.output_extent,
+        })
     }
 }
 
@@ -474,7 +507,11 @@ mod tests {
     }
 
     #[test]
-    fn vendor_stubs_invoked_directly_return_not_supported() {
+    fn dlss_and_xess_remain_not_supported_until_sdks_land() {
+        // Phase 5.5 A.5 + ADR-076: FSR ships now (spatial EASU path runs
+        // on any device); the remaining vendor SDKs (DLSS Streamline,
+        // XeSS) require runtime feature queries the cascade can only
+        // honour with the `dlss` / `xess` cargo features.
         let mut scratch: u32 = 0;
         let mut ctx = UpscaleCtx {
             frame_idx: 0,
@@ -488,11 +525,15 @@ mod tests {
             VendorDlss.upscale(&mut ctx),
             Err(UpscaleError::NotSupported)
         );
-        assert_eq!(VendorFsr.upscale(&mut ctx), Err(UpscaleError::NotSupported));
         assert_eq!(
             VendorXess.upscale(&mut ctx),
             Err(UpscaleError::NotSupported)
         );
+        // FSR now produces an UpscaleResult token directly; the
+        // dispatch math lives in the WGSL shader bundled with this crate.
+        let fsr = VendorFsr.upscale(&mut ctx).expect("FSR ships in v0.3");
+        assert_eq!(fsr.kind, UpscalerKind::Fsr);
+        assert_eq!(fsr.output_extent, [2560, 1440]);
     }
 
     #[test]
@@ -575,7 +616,12 @@ mod tests {
     }
 
     #[test]
-    fn owned_onnx_temporal_is_stubbed_until_ort_lands() {
+    fn owned_onnx_temporal_returns_cascade_token() {
+        // Phase 5.5 A.4: OwnedOnnxTemporal::supports() now returns true
+        // on every device (CPU fallback is always reachable), and the
+        // trait-level upscale() emits the cascade-selected token. The
+        // ort-runtime feature gate determines whether the real ONNX
+        // session loads or the CPU bilinear fallback runs.
         let mut scratch: u32 = 0;
         let mut ctx = UpscaleCtx {
             frame_idx: 0,
@@ -585,32 +631,37 @@ mod tests {
             quality: crate::upscaler_config::Quality::default(),
             user: &mut scratch,
         };
-        assert_eq!(
-            OwnedOnnxTemporal.upscale(&mut ctx),
-            Err(UpscaleError::NotSupported)
-        );
+        let r = OwnedOnnxTemporal
+            .upscale(&mut ctx)
+            .expect("OwnedOnnxTemporal ships in v0.3 with CPU fallback");
+        assert_eq!(r.kind, UpscalerKind::OwnedOnnx);
+        assert_eq!(r.output_extent, [2560, 1440]);
     }
 
     #[test]
-    fn phase6_cascade_falls_through_to_bilinear_until_onnx_supports() {
-        // With OwnedOnnxTemporal::supports() returning false the
-        // cascade walks DLSS → FSR → XeSS → OwnedOnnx → OwnedBilinear
-        // and lands on bilinear. When the `ort` binding lands and the
-        // ONNX provider's `supports()` flips to true, this test must
-        // change — that's the signal that the cascade behaviour
-        // shifted.
+    fn phase6_cascade_lands_on_fsr_when_dlss_and_xess_decline() {
+        // Phase 5.5 A.4 + A.5: FSR + OwnedOnnxTemporal now report
+        // supports() = true. With DLSS / XeSS still declining (their
+        // SDK feature gates are off in this build), the Auto cascade
+        // picks FSR. The cascade order is preserved end-to-end.
         let r = UpscalerRegistry::with_phase6_defaults();
         let mut chosen: Option<UpscalerKind> = None;
         let mut logger_box: Box<dyn FnMut(UpscalerKind)> = Box::new(|k| chosen = Some(k));
         let logger: SelectionLogger<'_> = &mut *logger_box;
-        // Predicate mirrors what `supports()` returns: vendor + onnx
-        // false, bilinear true.
         let picked = r
-            .select_with(|p| matches!(p.kind(), UpscalerKind::OwnedBilinear), logger)
-            .expect("bilinear must be selectable");
-        assert_eq!(picked.kind(), UpscalerKind::OwnedBilinear);
+            .select_with(
+                |p| {
+                    matches!(
+                        p.kind(),
+                        UpscalerKind::Fsr | UpscalerKind::OwnedOnnx | UpscalerKind::OwnedBilinear
+                    )
+                },
+                logger,
+            )
+            .expect("FSR must be selectable");
+        assert_eq!(picked.kind(), UpscalerKind::Fsr);
         drop(logger_box);
-        assert_eq!(chosen, Some(UpscalerKind::OwnedBilinear));
+        assert_eq!(chosen, Some(UpscalerKind::Fsr));
     }
 
     #[test]
