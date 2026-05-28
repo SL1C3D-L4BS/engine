@@ -469,10 +469,15 @@ name = "engine-bench-frame-pacing"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "engine-config",
  "engine-math",
  "engine-raster",
  "engine-render",
 ]
+
+[[package]]
+name = "engine-config"
+version = "0.0.0"
 
 [[package]]
 name = "engine-core"
@@ -580,6 +585,7 @@ dependencies = [
 name = "engine-render"
 version = "0.0.0"
 dependencies = [
+ "engine-config",
  "engine-gpu",
  "engine-math",
  "engine-raster",
@@ -612,6 +618,16 @@ dependencies = [
  "blake3",
  "engine-asset",
  "engine-core",
+]
+
+[[package]]
+name = "engine-splatting"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "engine-asset",
+ "engine-math",
+ "engine-platform",
 ]
 
 [[package]]

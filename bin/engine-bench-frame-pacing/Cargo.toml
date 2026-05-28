@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 blake3 = { workspace = true }
+engine-config = { workspace = true }
 engine-math = { workspace = true }
 engine-raster = { path = "../../testbed/engine-raster" }
 engine-render = { workspace = true }

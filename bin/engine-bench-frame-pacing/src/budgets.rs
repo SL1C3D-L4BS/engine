@@ -1,10 +1,9 @@
 //! Owned TOML reader for `tools/frame-pacing/budgets.toml`.
 //!
-//! Mirrors the pattern in `engine_script::breakpoints_toml` — line-by-line
-//! parse, `key = value` after a `[budgets]` section header. No serde, no
-//! third-party TOML parser. The schema is fixed at two scalar fields; any
-//! line outside the schema is ignored so future ADR-amend additions read
-//! cleanly on old binaries.
+//! Phase 6 PR 1d (ADR-082): the parser is a thin adapter over
+//! [`engine_config::parse`] — the section-walk + comment-stripping +
+//! quote-awareness layer lives in the shared crate. Local code only
+//! names the two domain fields the file carries.
 
 use std::path::Path;
 
@@ -27,52 +26,24 @@ pub fn read_from_path(path: &Path) -> Result<Budgets, String> {
 
 /// Parse a budgets-TOML body. Tolerates blank lines, `#` comments, and
 /// arbitrary whitespace. Section headers other than `[budgets]` are
-/// ignored.
+/// ignored. Malformed inputs degrade to `Budgets::default()` — the
+/// caller is expected to fall back to spec defaults.
 pub fn parse(source: &str) -> Budgets {
     let mut budgets = Budgets::default();
-    let mut in_budgets = false;
-    for raw in source.lines() {
-        let line = strip_comment(raw).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            in_budgets = line == "[budgets]";
-            continue;
-        }
-        if !in_budgets {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = strip_comment(value).trim();
-        match key {
-            "p99_ms" => {
-                if let Ok(v) = value.parse::<f64>() {
-                    budgets.p99_ms = Some(v);
-                }
-            }
-            "stddev_ms" => {
-                if let Ok(v) = value.parse::<f64>() {
-                    budgets.stddev_ms = Some(v);
-                }
-            }
+    let Ok(cfg) = engine_config::parse(source) else {
+        return budgets;
+    };
+    let Some(section) = cfg.section("budgets") else {
+        return budgets;
+    };
+    for (key, value) in &section.entries {
+        match key.as_str() {
+            "p99_ms" => budgets.p99_ms = value.as_f64(),
+            "stddev_ms" => budgets.stddev_ms = value.as_f64(),
             _ => {}
         }
     }
     budgets
-}
-
-/// Strip a trailing `# comment` from a line. Treats the first un-escaped
-/// `#` as the comment start; this file's strings never embed `#`, so no
-/// escape handling is required.
-fn strip_comment(line: &str) -> &str {
-    match line.find('#') {
-        Some(i) => &line[..i],
-        None => line,
-    }
 }
 
 #[cfg(test)]

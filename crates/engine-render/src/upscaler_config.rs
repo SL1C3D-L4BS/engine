@@ -8,11 +8,10 @@
 //! quality  = "performance" | "balanced" | "quality" | "ultra-quality"
 //! ```
 //!
-//! Mirrors the line-by-line pattern in
-//! `bin/engine-bench-frame-pacing/src/budgets.rs`. No serde, no third-party
-//! TOML parser — the schema is a flat key/value pair under a known
-//! section header. Unknown keys + sections are silently skipped so an
-//! older binary can read a newer file without aborting; invalid values
+//! Phase 6 PR 1d (ADR-082): the line-iteration + section-walk +
+//! comment-stripping + quote-awareness layer lives in the shared
+//! [`engine_config`] crate. This module names only the two domain
+//! enums (`Provider`, `Quality`) the schema carries; invalid values
 //! return [`ParseError`] so misconfiguration surfaces loudly at startup.
 
 use core::fmt;
@@ -151,33 +150,49 @@ pub fn read_from_path(path: &Path) -> Result<UpscalerConfig, String> {
 /// Parse an `engine.toml` body. Tolerates blank lines, `#` comments,
 /// and arbitrary whitespace. Section headers other than `[upscaler]`
 /// are ignored.
+///
+/// Phase 6 PR 1d (ADR-082): delegates the line-iteration + section
+/// walk + comment-stripping + quote-awareness to [`engine_config`];
+/// this body only names the two domain enums.
 pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
     let mut config = UpscalerConfig::default();
-    let mut in_section = false;
-    for raw in source.lines() {
-        let line = strip_comment(raw).trim();
-        if line.is_empty() {
-            continue;
+    let cfg = engine_config::parse(source).map_err(|e| match e {
+        engine_config::ParseError::UnterminatedString { line, .. } => {
+            // Reconstruct the malformed value from the source for the
+            // `UnbalancedQuote { value }` carry. Lines are 1-based.
+            let value = source
+                .lines()
+                .nth(line.saturating_sub(1))
+                .and_then(|raw| raw.split_once('=').map(|(_, v)| v.trim()))
+                .unwrap_or("")
+                .to_string();
+            ParseError::UnbalancedQuote { value }
         }
-        if line.starts_with('[') && line.ends_with(']') {
-            // Trim inside the brackets so `[upscaler]`, `[ upscaler ]`,
-            // and `[  upscaler  ]` are all treated as the same section.
-            let inner = &line[1..line.len() - 1];
-            in_section = inner.trim() == "upscaler";
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
+        // Any other malformation surfaces as an unbalanced-quote-like
+        // structural error — the schema does not exercise the other
+        // engine_config variants (no empty keys, no malformed headers
+        // in `[upscaler]`'s flat schema).
+        _ => ParseError::UnbalancedQuote {
+            value: String::new(),
+        },
+    })?;
+
+    // Walk every `[upscaler]` section (last assignment wins per the
+    // engine_config semantics). Section names are matched verbatim;
+    // engine_config already trims internal whitespace inside the
+    // brackets, so `[ upscaler ]` and `[upscaler]` both land here.
+    let Some(section) = cfg.section("upscaler") else {
+        return Ok(config);
+    };
+    for (key, value) in &section.entries {
+        let Some(raw) = value.as_str() else {
+            // Numeric / bool values for these keys aren't in the schema;
+            // skip silently for forward-compat.
             continue;
         };
-        let key = key.trim();
-        let value = strip_comment(value).trim();
-        let value = unquote(value)?;
-        match key {
+        match key.as_str() {
             "provider" => {
-                config.provider = match value {
+                config.provider = match raw {
                     "auto" => Provider::Auto,
                     "dlss" => Provider::Dlss,
                     "fsr" => Provider::Fsr,
@@ -188,7 +203,7 @@ pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
                 };
             }
             "quality" => {
-                config.quality = match value {
+                config.quality = match raw {
                     "performance" => Quality::Performance,
                     "balanced" => Quality::Balanced,
                     "quality" => Quality::Quality,
@@ -200,62 +215,6 @@ pub fn parse(source: &str) -> Result<UpscalerConfig, ParseError> {
         }
     }
     Ok(config)
-}
-
-/// Truncate `line` at the first `#` that lies outside a quoted string,
-/// preserving `#` characters inside `"..."` or `'...'` values. The
-/// minimal TOML schema does not allow escape sequences, so toggling on
-/// the matching quote byte is sufficient.
-fn strip_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut in_quote: Option<u8> = None;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        match in_quote {
-            None => {
-                if b == b'#' {
-                    return &line[..i];
-                }
-                if b == b'"' || b == b'\'' {
-                    in_quote = Some(b);
-                }
-            }
-            Some(q) if b == q => {
-                in_quote = None;
-            }
-            Some(_) => {}
-        }
-        i += 1;
-    }
-    line
-}
-
-/// Strip surrounding double or single quotes if present.
-///
-/// The schema quotes string values; the reader is lenient for
-/// hand-edited manifests that omit the quotes entirely (`provider =
-/// dlss`). An *unbalanced* leading quote (e.g. `"dlss`) is a hard
-/// parse error rather than a silent pass-through, since the latter
-/// surfaces later as a confusing `UnknownProvider("\"dlss")`.
-fn unquote(s: &str) -> Result<&str, ParseError> {
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-    if len == 0 {
-        return Ok(s);
-    }
-    let first = bytes[0];
-    if first != b'"' && first != b'\'' {
-        // Unquoted value — accept verbatim.
-        return Ok(s);
-    }
-    let last = bytes[len - 1];
-    if len >= 2 && first == last {
-        return Ok(&s[1..len - 1]);
-    }
-    Err(ParseError::UnbalancedQuote {
-        value: s.to_string(),
-    })
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+engine-config = { workspace = true }
 engine-gpu = { workspace = true }
 engine-shader = { workspace = true }
 
