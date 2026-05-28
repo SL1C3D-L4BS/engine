@@ -28,6 +28,8 @@ engine-math = { path = "crates/engine-math" }
 engine-platform = { path = "crates/engine-platform" }
 engine-reflect = { path = "crates/engine-reflect" }
 engine-ecs-macro = { path = "crates/engine-ecs-macro" }
+# ADR-082: owned line-oriented TOML reader (Level 1).
+engine-config = { path = "crates/engine-config" }
 engine-core = { path = "crates/engine-core" }
 engine-asset = { path = "crates/engine-asset" }
 engine-telemetry = { path = "crates/engine-telemetry" }

@@ -1,0 +1,21 @@
+[package]
+name = "engine-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+description = """
+Owned line-oriented TOML reader. Level-1 foundation crate
+consolidating the parsers previously duplicated in
+engine-render::upscaler_config, engine-bench-frame-pacing::budgets,
+and engine-script::breakpoints_toml. See ADR-082.
+"""
+
+[features]
+default = ["std"]
+# Enable filesystem-backed conveniences (`fs::read_from_path`).
+std = []
+
+[lints]
+workspace = true
