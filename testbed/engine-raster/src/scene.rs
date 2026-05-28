@@ -64,9 +64,18 @@ impl Camera {
         ])
     }
 
-    /// Projection matrix (camera → clip space, right-handed, `[0, 1]` Z).
+    /// Projection matrix (camera → clip space, right-handed, **reverse-Z**:
+    /// `near → z = 1`, `far → z = 0`). The engine renders with a reverse-Z
+    /// depth buffer for FP32 precision (ADR-064 §3): GBuffer / CSM clear
+    /// depth to 0.0 (far), `depth_compare` is `GreaterEqual`, and the
+    /// lighting shader's `depth <= 0.0` check identifies sky pixels.
+    /// Swapping `near` and `far` in [`Mat4::perspective_rh`] yields the
+    /// reverse-Z matrix directly — algebra in `mat.rs::perspective_rh`
+    /// is `m10 = far_arg / (near_arg - far_arg)` and
+    /// `m14 = (far_arg * near_arg) / (near_arg - far_arg)`, both
+    /// symmetric in the swap.
     pub fn projection(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far)
+        Mat4::perspective_rh(self.fov_y, self.aspect, self.far, self.near)
     }
 
     /// View-projection product.
@@ -345,6 +354,39 @@ mod tests {
         // A box in front, on-axis.
         let inside = Aabb::from_corners(Vec3::new(-0.5, -0.5, -5.0), Vec3::new(0.5, 0.5, -4.0));
         assert!(!f.rejects_aabb(&inside));
+    }
+
+    #[test]
+    fn projection_is_reverse_z() {
+        // The engine renders with a reverse-Z depth buffer: near → 1,
+        // far → 0. Lock the convention so a future refactor cannot
+        // silently flip the depth axis (the cube parity fixture's GPU
+        // output relies on this matching `GBufferPass`'s `Clear(0.0)`
+        // + the pipeline's `GreaterEqual` depth compare).
+        let cam = Camera {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            forward: Vec3::new(0.0, 0.0, -1.0),
+            up: Vec3::new(0.0, 1.0, 0.0),
+            fov_y: 1.0,
+            aspect: 1.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let p = cam.projection();
+        // A point at view_z = -near (i.e. on the near plane).
+        let on_near = p * engine_math::Vec4::new(0.0, 0.0, -cam.near, 1.0);
+        // A point at view_z = -far.
+        let on_far = p * engine_math::Vec4::new(0.0, 0.0, -cam.far, 1.0);
+        let z_near_ndc = on_near.z / on_near.w;
+        let z_far_ndc = on_far.z / on_far.w;
+        assert!(
+            (z_near_ndc - 1.0).abs() < 1e-4,
+            "near plane must project to NDC z = 1 (reverse-Z), got {z_near_ndc}",
+        );
+        assert!(
+            z_far_ndc.abs() < 1e-4,
+            "far plane must project to NDC z = 0 (reverse-Z), got {z_far_ndc}",
+        );
     }
 
     #[test]

@@ -557,7 +557,12 @@ impl RenderPipeline {
         let depth_stencil = desc.depth_stencil.map(|d| wgpu::DepthStencilState {
             format: d.format.to_wgpu(),
             depth_write_enabled: Some(d.depth_write_enabled),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            // Reverse-Z: clear is 0.0 (far) and closer fragments produce
+            // larger depth values, so `GreaterEqual` is the correct
+            // overwrite condition. The lighting shader's `depth <= 0.0`
+            // sky-pixel check and `GBufferPass`'s `Clear(0.0)` both
+            // depend on this convention (ADR-064 §3, ADR-046).
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         });

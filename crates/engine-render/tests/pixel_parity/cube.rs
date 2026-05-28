@@ -23,50 +23,62 @@
 //! in ways that require per-pass tightening across subsequent slices
 //! (ADR-046's per-fixture exception process is the documented path).
 //!
-//! ## Known parity gaps surfaced by Slice 4 diagnostic
+//! ## Engine-side issues uncovered by the cube diagnostic
 //!
 //! The Slice 4 diagnostic (per-region pixel counters + top-5 worst
-//! pixels) on the developer's RX 580 shows the GPU output is currently
-//! fully black (`gpu-lit only = 0`, `both-lit = 0`). Investigating
-//! surfaced three engine-side issues that subsequent slices need to
-//! address before the verdict tightens:
+//! pixels) on the developer's RX 580 surfaced three issues. Slice 6
+//! fixed the most consequential one (root cause of "GPU output is
+//! fully black"); two remain for subsequent slices.
 //!
-//! 1. **`ClusterUniforms` WGSL std140 padding gap.** The struct's
+//! 1. **(FIXED, Slice 6) Reverse-Z mismatch across the stack.** The
+//!    engine's depth comments and lighting shader's `depth <= 0.0`
+//!    sky-pixel check both assume reverse-Z (`near → z=1, far → z=0`),
+//!    `GBufferPass` clears the depth attachment to `0.0` (reverse-Z
+//!    far), but `engine_gpu`'s pipeline builder hardcoded
+//!    `depth_compare: LessEqual` (standard depth) **and**
+//!    `Camera::projection()` returned a standard-Z perspective matrix
+//!    via `Mat4::perspective_rh(near, far)`. The combined effect:
+//!    every fragment's standard-Z depth (`> 0`) failed the `LessEqual
+//!    0.0` test, depth stayed at the clear value, the lighting shader's
+//!    `depth <= 0.0` short-circuited every pixel to black. Slice 6
+//!    switched `engine_gpu` to `GreaterEqual` and made
+//!    `Camera::projection()` produce reverse-Z by swapping `near` and
+//!    `far` in [`Mat4::perspective_rh`]. The depth diagnostic in
+//!    [`cube_parity`] confirms the cube now writes ~391 reverse-Z
+//!    depth samples per render.
+//! 2. **`ClusterUniforms` WGSL std140 padding gap.** The struct's
 //!    `light_count : u32` lives at offset 64 + 4 = 68, but the next
 //!    field `grid_dim : vec3<u32>` needs 16-byte alignment per WGSL
 //!    spec — so `grid_dim` lands at offset 80, not 68. The cluster
 //!    cube fixture's `cluster_uniforms()` writer (this file) currently
 //!    skips the 12-byte gap; the resulting cluster grid dimensions are
 //!    read as garbage by `cluster_assign.wgsl`, so per-cell light
-//!    lookup in `lighting.wgsl` returns the wrong cell.
-//! 2. **Lighting shader treats every light as a point light.**
+//!    lookup in `lighting.wgsl` returns the wrong cell. Slice 5 closes
+//!    this gap.
+//! 3. **Lighting shader treats every light as a point light.**
 //!    `lighting.wgsl:171` does `to_light = light.position_radius.xyz -
 //!    world_pos`, ignoring `light.direction.xyz` + the `params.w`
 //!    light-type tag. A directional light written with `position_radius
 //!    = (0,0,0,0)` and `direction = (sun direction)` produces
 //!    `to_light = -world_pos`, which gives a position-derived BRDF
-//!    input rather than the documented light direction.
-//! 3. **Lighting shader early-exit on depth = 0.** `lighting.wgsl:142`
-//!    short-circuits with black when `depth <= 0.0` ("reverse-Z far =
-//!    sky"). If GBufferPass doesn't actually rasterise the cube — which
-//!    today's investigation suggests is happening — the depth buffer
-//!    stays at the clear value (reverse-Z 0.0), the lighting shader
-//!    returns black for every pixel, and the tonemap output is fully
-//!    black.
+//!    input rather than the documented light direction. For the cube
+//!    (centered at origin) the resulting `to_light` always points
+//!    INTO the cube, so `n_dot_l ≤ 0` for every visible face and the
+//!    cube is shaded black regardless of which face. Slice 7 closes
+//!    this gap.
 //!
-//! Slice 5+ will close each gap. The cube fixture's parity assertion
-//! tightens correspondingly.
+//! The cube fixture's parity assertion tightens as each slice lands.
 
-use engine_gpu::{Buffer, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder};
+use engine_gpu::{Buffer, BufferDesc, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder};
 use engine_math::Mat4;
 use engine_raster::{CubeParityScene, OracleVerdict, compare_images};
 use engine_render::{GpuFrameContext, ResourceId, ResourceResolver, TransientResourceTable};
 
 use super::harness::{
-    ParityHarness, Pool, RID_BLOOM_UBO, RID_CLUSTER_UBO, RID_CSM_UBO, RID_DRAW_COUNT_SSBO,
-    RID_FRUSTUM_UBO, RID_GBUFFER_FRAME_UBO, RID_IBL_UBO, RID_INDEX_BUF, RID_INSTANCES_SSBO,
-    RID_LIGHTING_FRAME_UBO, RID_LIGHTS, RID_MESHES_SSBO, RID_RENDER_QUEUE, RID_SSAO_UBO,
-    RID_TAA_UBO, RID_TONEMAP_UBO, RID_VERTEX_BUF,
+    ParityHarness, Pool, RID_BLOOM_UBO, RID_CLUSTER_UBO, RID_CSM_UBO, RID_DEPTH,
+    RID_DRAW_COUNT_SSBO, RID_FRUSTUM_UBO, RID_GBUFFER_FRAME_UBO, RID_IBL_UBO, RID_INDEX_BUF,
+    RID_INSTANCES_SSBO, RID_LIGHTING_FRAME_UBO, RID_LIGHTS, RID_MESHES_SSBO, RID_RENDER_QUEUE,
+    RID_SSAO_UBO, RID_TAA_UBO, RID_TONEMAP_UBO, RID_VERTEX_BUF,
 };
 
 fn buffer_for(table: &TransientResourceTable, id: ResourceId) -> &Buffer {
@@ -572,6 +584,12 @@ fn cube_parity() {
     };
     let queue = harness.device.queue();
 
+    let features = harness.device.features();
+    eprintln!(
+        "[parity.cube] device features: multi_draw_indirect_count={} indirect_first_instance={}",
+        features.multi_draw_indirect_count, features.indirect_first_instance
+    );
+
     let scene = CubeParityScene::default_v0();
     let pool = harness.allocate_pool(scene.width, scene.height);
     seed_scene(&harness, &pool, &scene);
@@ -596,6 +614,28 @@ fn cube_parity() {
             .expect("graph executes end-to-end");
     }
     let staging = harness.copy_tonemap_to_staging(&mut encoder, &pool);
+
+    // Diagnostic: read back the depth attachment so we can observe
+    // whether GBuffer actually rasterised the cube. Reverse-Z clear is
+    // 0.0; any value > 0 means a fragment passed the depth test.
+    let depth_tex = pool
+        .table
+        .resolve_texture(RID_DEPTH)
+        .expect("depth registered in pool");
+    let depth_unpadded = scene.width * 4;
+    let depth_padded =
+        depth_unpadded.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
+    let depth_size = depth_padded as u64 * scene.height as u64;
+    let depth_staging = Buffer::new(
+        &harness.device,
+        &BufferDesc {
+            label: "parity.cube.depth.staging",
+            size: depth_size,
+            usage: BufferUsage::COPY_DST | BufferUsage::MAP_READ,
+        },
+    );
+    encoder.copy_texture_to_buffer(depth_tex, &depth_staging, depth_padded, scene.height);
+
     let _token = queue.submit(encoder);
 
     let unpadded = scene.width * 4;
@@ -603,6 +643,32 @@ fn cube_parity() {
         unpadded.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
     assert_eq!(staging.padded_row, expected_padded);
     let gpu_fb = staging.read_back_to_framebuffer();
+
+    // Inspect the depth buffer the GBuffer wrote.
+    let depth_bytes = depth_staging
+        .read_back()
+        .expect("depth staging maps for read");
+    let mut depth_nonzero = 0u64;
+    let mut depth_max: f32 = 0.0;
+    for y in 0..scene.height {
+        for x in 0..scene.width {
+            let row_base = (y * depth_padded) as usize;
+            let pix_base = row_base + (x as usize) * 4;
+            let d = f32::from_le_bytes([
+                depth_bytes[pix_base],
+                depth_bytes[pix_base + 1],
+                depth_bytes[pix_base + 2],
+                depth_bytes[pix_base + 3],
+            ]);
+            if d > 0.0 {
+                depth_nonzero += 1;
+                if d > depth_max {
+                    depth_max = d;
+                }
+            }
+        }
+    }
+    eprintln!("[parity.cube] depth: {depth_nonzero} pixels with depth > 0 (max = {depth_max})",);
 
     // ---- CPU oracle reference ----
     let cpu_fb = scene.render_cpu();

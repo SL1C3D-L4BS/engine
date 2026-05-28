@@ -571,8 +571,12 @@ fn depth_target(device: &Device, label: &'static str, width: u32, height: u32) -
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
+            // COPY_SRC enables depth-buffer readback for parity-fixture
+            // diagnostics (Slice 6 confirms GBuffer wrote depth).
             format: contracts::DEPTH_BUFFER_FORMAT,
-            usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::TEXTURE_BINDING,
+            usage: TextureUsage::RENDER_ATTACHMENT
+                | TextureUsage::TEXTURE_BINDING
+                | TextureUsage::COPY_SRC,
         },
     )
 }
