@@ -1,9 +1,27 @@
 // TonemapPass — ACES filmic (Stephen Hill fit) (ADR-065 §6).
 //
 // Workgroup: (8, 8, 1). Reads TaaResolvedColor + BloomTexture;
-// writes TonemappedColor (Bgra8UnormSrgb — swapchain-compatible).
+// writes TonemappedColor (Bgra8Unorm storage, with manual linear → sRGB
+// encoding before `textureStore` since storage-texture writes bypass
+// the swapchain view's implicit format conversion).
 //
 // Source-of-truth: `engine_raster::post_fx::aces_filmic_tonemap`.
+
+// Per-component linear → sRGB conversion (IEC 61966-2-1).
+fn linear_to_srgb_component(c : f32) -> f32 {
+    if (c <= 0.0031308) {
+        return c * 12.92;
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+fn linear_to_srgb(rgb : vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        linear_to_srgb_component(rgb.x),
+        linear_to_srgb_component(rgb.y),
+        linear_to_srgb_component(rgb.z),
+    );
+}
 
 struct TonemapUniforms {
     exposure : f32,
@@ -16,7 +34,7 @@ struct TonemapUniforms {
 @group(2) @binding(0) var taa_resolved : texture_2d<f32>;
 @group(2) @binding(1) var bloom : texture_2d<f32>;
 @group(2) @binding(2) var lin_sampler : sampler;
-@group(2) @binding(3) var dst : texture_storage_2d<bgra8unorm_srgb, write>;
+@group(2) @binding(3) var dst : texture_storage_2d<bgra8unorm, write>;
 
 // ACES input transform.
 fn aces_input(v : vec3<f32>) -> vec3<f32> {
@@ -61,5 +79,9 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let mixed = mix(scene, scene + bloom_sample, tonemap.bloom_mix);
     let exposed = mixed * tonemap.exposure / max(tonemap.white_point, 1e-4);
     let mapped = aces_filmic(exposed);
-    textureStore(dst, vec2<i32>(gid.xy), vec4<f32>(mapped, 1.0));
+    // Storage-texture writes bypass the swapchain view's implicit
+    // linear → sRGB conversion; encode manually so the displayed
+    // image is perceptually correct.
+    let encoded = linear_to_srgb(mapped);
+    textureStore(dst, vec2<i32>(gid.xy), vec4<f32>(encoded, 1.0));
 }

@@ -28,7 +28,7 @@ struct CsmUniforms {
     bias_slope : f32,
 };
 
-var<push_constant> push : PushConstants;
+var<immediate> push : PushConstants;
 @group(1) @binding(0) var<uniform> csm : CsmUniforms;
 
 struct VertexInput {

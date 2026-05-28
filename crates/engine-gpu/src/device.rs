@@ -70,6 +70,23 @@ pub struct DeviceFeatures {
     /// required for bindless heap shader-side access per ADR-044
     /// "Risks and tradeoffs".
     pub descriptor_indexing: bool,
+    /// `MULTIVIEW` (Vulkan `VK_KHR_multiview`, D3D12 view-instancing,
+    /// Metal layered rendering). Required by the ADR-040 CSM shader's
+    /// `@builtin(view_index)` — 4 cascades in 1 draw call. Polaris GFX8
+    /// supports it via Mesa RADV; absence forces a fallback to 4 draws.
+    pub multiview: bool,
+    /// `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` — opt in to adapter-
+    /// native format usages beyond the wgpu base spec. Required to use
+    /// `R16Float` as a write-only storage texture (the SSAO target
+    /// per ADR-065 §1). Polaris/RADV exposes R16Float storage write;
+    /// older mobile / web adapters may not.
+    pub adapter_specific_format_features: bool,
+    /// `BGRA8UNORM_STORAGE` — write-only storage textures with format
+    /// `Bgra8Unorm`. Required by the ADR-065 §6 tonemap pass which
+    /// writes the final swapchain-compatible output. Polaris/RADV
+    /// supports it natively (BGRA8 is the X11 / Wayland-preferred
+    /// layout); absence forces an Rgba8Unorm intermediate + blit.
+    pub bgra8unorm_storage: bool,
 }
 
 /// Owned GPU device handle.
@@ -160,6 +177,10 @@ impl Device {
                 && adapter_features.contains(
                     wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 ),
+            multiview: adapter_features.contains(wgpu::Features::MULTIVIEW),
+            adapter_specific_format_features: adapter_features
+                .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
+            bgra8unorm_storage: adapter_features.contains(wgpu::Features::BGRA8UNORM_STORAGE),
         };
 
         let mut required_features = wgpu::Features::empty();
@@ -168,6 +189,15 @@ impl Device {
         }
         if features.bc_textures {
             required_features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
+        }
+        if features.multiview {
+            required_features |= wgpu::Features::MULTIVIEW;
+        }
+        if features.adapter_specific_format_features {
+            required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        }
+        if features.bgra8unorm_storage {
+            required_features |= wgpu::Features::BGRA8UNORM_STORAGE;
         }
 
         // wgpu's `Limits::downlevel_defaults()` (Tier1Minimum) sets

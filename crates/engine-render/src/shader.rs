@@ -31,9 +31,8 @@
 //!   construct ~10 pipelines per frame in PR 3.
 
 use engine_gpu::{
-    BindGroupLayoutDesc, ComputePipeline, ComputePipelineDesc, Device, PipelineLayout,
-    PipelineLayoutDesc, RenderPipeline, RenderPipelineDesc, ShaderModule, ShaderModuleDesc,
-    VertexState,
+    BindGroupLayoutDesc, ComputePipeline, ComputePipelineDesc, Device, RenderPipeline,
+    RenderPipelineDesc, ShaderModule, ShaderModuleDesc, VertexState,
 };
 use engine_shader::{Artifact, Bundle, Stage, Target};
 
@@ -151,10 +150,13 @@ pub struct ComputePipelineHelperDesc<'a> {
 /// Build a `RenderPipeline` from a [`ShaderArtefactSet`] pair.
 ///
 /// The helper picks the WGSL artefact for each stage, decodes it as
-/// UTF-8 source, builds an `engine_gpu::ShaderModule`, constructs a
-/// minimal `PipelineLayout` (empty bind groups — PR 3 widens this when
-/// the geometry passes need group-0/1/2/3 bindings per ADR-063 §4),
-/// and assembles the pipeline.
+/// UTF-8 source, builds an `engine_gpu::ShaderModule`, and assembles
+/// the pipeline with `layout: None` so wgpu auto-derives the bind-group
+/// layouts from the WGSL `@group`/`@binding`/`var<push_constant>`
+/// declarations (ADR-075 §8 A.2a bootstrap). The implicit layouts are
+/// retrievable via [`RenderPipeline::bind_group_layout`]; A.2b's per-
+/// pass `bindgroups/` modules replace the auto-derive with explicit
+/// layouts as the bind-group construction surface lands.
 pub fn build_render_pipeline(
     device: &Device,
     desc: &RenderPipelineHelperDesc<'_>,
@@ -164,14 +166,6 @@ pub fn build_render_pipeline(
         Some(fs) => Some(build_shader_module(device, fs, desc.label, "fragment")?),
         None => None,
     };
-
-    let layout = PipelineLayout::new(
-        device,
-        &PipelineLayoutDesc {
-            label: desc.label,
-            bind_group_layouts: &[],
-        },
-    );
 
     let fragment_state = fragment_module
         .as_ref()
@@ -183,7 +177,7 @@ pub fn build_render_pipeline(
 
     let pipeline_desc = RenderPipelineDesc {
         label: desc.label,
-        layout: &layout,
+        layout: None,
         vertex: VertexState {
             module: &vertex_module,
             entry_point: desc.vertex_entry,
@@ -196,21 +190,19 @@ pub fn build_render_pipeline(
 }
 
 /// Build a `ComputePipeline` from a [`ShaderArtefactSet`].
+///
+/// Builds with `layout: None` so wgpu auto-derives the bind-group
+/// layouts from the WGSL `@group`/`@binding` declarations (ADR-075 §8
+/// A.2a bootstrap). The implicit layouts are retrievable via
+/// [`ComputePipeline::bind_group_layout`].
 pub fn build_compute_pipeline(
     device: &Device,
     desc: &ComputePipelineHelperDesc<'_>,
 ) -> Result<ComputePipeline, ShaderError> {
     let module = build_shader_module(device, desc.compute, desc.label, "compute")?;
-    let layout = PipelineLayout::new(
-        device,
-        &PipelineLayoutDesc {
-            label: desc.label,
-            bind_group_layouts: &[],
-        },
-    );
     let pipeline_desc = ComputePipelineDesc {
         label: desc.label,
-        layout: &layout,
+        layout: None,
         module: &module,
         entry_point: desc.entry,
     };

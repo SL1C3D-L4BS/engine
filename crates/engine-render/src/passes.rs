@@ -49,8 +49,48 @@
 //! [`engine_gpu::TextureView`]s that the render graph's transient
 //! resource pool doesn't yet resolve.
 
-use engine_gpu::{ColorTargetState, ComputePipeline, DepthStencilState, Device, RenderPipeline};
+use engine_gpu::{
+    ColorTargetState, ComputePipeline, DepthStencilState, Device, RenderPipeline, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexStepMode,
+};
 use engine_shader::Stage;
+
+/// Interleaved mesh-vertex layout (position + normal + tangent + uv0) —
+/// the EMSH binary format's `MeshVertex` struct. ADR-061 §1 pins the
+/// layout: 12 + 12 + 16 + 8 = 48 bytes per vertex. Both `GBufferPass`
+/// and `CsmShadowPass` consume this layout; the shadow path declares
+/// only `@location(0)` (position), but the same buffer feeds both
+/// pipelines because wgpu only validates declared locations.
+const MESH_VERTEX_ATTRIBUTES: &[VertexAttribute] = &[
+    VertexAttribute {
+        offset: 0,
+        shader_location: 0,
+        format: VertexFormat::Float32x3,
+    },
+    VertexAttribute {
+        offset: 12,
+        shader_location: 1,
+        format: VertexFormat::Float32x3,
+    },
+    VertexAttribute {
+        offset: 24,
+        shader_location: 2,
+        format: VertexFormat::Float32x4,
+    },
+    VertexAttribute {
+        offset: 40,
+        shader_location: 3,
+        format: VertexFormat::Float32x2,
+    },
+];
+
+fn mesh_vertex_buffer_layout() -> [VertexBufferLayout<'static>; 1] {
+    [VertexBufferLayout {
+        array_stride: 48,
+        step_mode: VertexStepMode::Vertex,
+        attributes: MESH_VERTEX_ATTRIBUTES,
+    }]
+}
 
 use crate::contracts::{
     DEPTH_BUFFER_FORMAT, GBUFFER_ALBEDO_ROUGHNESS_FORMAT, GBUFFER_MOTION_DEPTH_FORMAT,
@@ -84,13 +124,14 @@ pub(crate) fn build_cull_pipeline(device: &Device) -> Result<ComputePipeline, Sh
 
 pub(crate) fn build_csm_shadow_pipeline(device: &Device) -> Result<RenderPipeline, ShaderError> {
     let vs = wgsl_artefact_set(Stage::Vertex, "vs_main", CSM_SHADOW_WGSL);
+    let buffers = mesh_vertex_buffer_layout();
     build_render_pipeline(
         device,
         &RenderPipelineHelperDesc {
             label: "shadow",
             vertex: &vs,
             vertex_entry: "vs_main",
-            vertex_buffers: &[],
+            vertex_buffers: &buffers,
             fragment: None,
             fragment_entry: "",
             color_targets: &[],
@@ -119,6 +160,7 @@ pub(crate) fn build_cluster_assign_pipeline(
 pub(crate) fn build_gbuffer_pipeline(device: &Device) -> Result<RenderPipeline, ShaderError> {
     let vs = wgsl_artefact_set(Stage::Vertex, "vs_main", GBUFFER_WGSL);
     let fs = wgsl_artefact_set(Stage::Fragment, "fs_main", GBUFFER_WGSL);
+    let buffers = mesh_vertex_buffer_layout();
     build_render_pipeline(
         device,
         &RenderPipelineHelperDesc {
@@ -128,7 +170,7 @@ pub(crate) fn build_gbuffer_pipeline(device: &Device) -> Result<RenderPipeline, 
             label: "draw.opaque",
             vertex: &vs,
             vertex_entry: "vs_main",
-            vertex_buffers: &[],
+            vertex_buffers: &buffers,
             fragment: Some(&fs),
             fragment_entry: "fs_main",
             color_targets: &[

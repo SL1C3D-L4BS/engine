@@ -276,12 +276,24 @@ pub struct DepthStencilState {
 }
 
 /// Render-pipeline descriptor.
+///
+/// `layout` is `Option<&PipelineLayout>` so the engine can choose between
+/// (a) an explicit, hand-authored layout (the production path for ADR-075
+/// `bindgroups/`-module discipline) and (b) wgpu's auto-derive
+/// (`None`) which introspects the shader's `@group`/`@binding`/
+/// `var<push_constant>` declarations and synthesises an implicit
+/// layout. The implicit layout is queryable per-set via
+/// [`RenderPipeline::bind_group_layout`].
+///
+/// ADR-075 §8 specifies that A.2a uses auto-derive as the unblock for
+/// the smoke test; explicit layouts replace auto-derive on a per-pass
+/// basis as the `bindgroups/` modules land in A.2b / A.2c.
 #[derive(Clone, Debug)]
 pub struct RenderPipelineDesc<'a> {
     /// Debug label.
     pub label: &'a str,
-    /// Pipeline layout.
-    pub layout: &'a PipelineLayout,
+    /// Pipeline layout. `None` selects wgpu's auto-derive path.
+    pub layout: Option<&'a PipelineLayout>,
     /// Vertex stage.
     pub vertex: VertexState<'a>,
     /// Fragment stage (optional — depth-only passes skip).
@@ -360,7 +372,7 @@ impl RenderPipeline {
             .raw()
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(desc.label),
-                layout: Some(desc.layout.raw()),
+                layout: desc.layout.map(|l| l.raw()),
                 vertex: wgpu::VertexState {
                     module: desc.vertex.module.raw(),
                     entry_point: Some(desc.vertex.entry_point),
@@ -377,6 +389,17 @@ impl RenderPipeline {
         Self { raw: Arc::new(raw) }
     }
 
+    /// Query the per-set bind-group layout. When the pipeline was built
+    /// with an auto-derived layout (`RenderPipelineDesc.layout = None`),
+    /// this is the only way to retrieve the implicit layout that wgpu
+    /// synthesised from shader reflection — bind-group construction
+    /// keys against it.
+    pub fn bind_group_layout(&self, set_index: u32) -> BindGroupLayout {
+        BindGroupLayout {
+            raw: Arc::new(self.raw.get_bind_group_layout(set_index)),
+        }
+    }
+
     /// Crate-internal access to the underlying `wgpu::RenderPipeline`.
     pub(crate) fn raw(&self) -> &wgpu::RenderPipeline {
         &self.raw
@@ -384,12 +407,15 @@ impl RenderPipeline {
 }
 
 /// Compute-pipeline descriptor.
+///
+/// `layout` is `Option<&PipelineLayout>` — see [`RenderPipelineDesc`]
+/// for the auto-derive vs explicit-layout rationale (ADR-075 §8).
 #[derive(Clone, Debug)]
 pub struct ComputePipelineDesc<'a> {
     /// Debug label.
     pub label: &'a str,
-    /// Pipeline layout.
-    pub layout: &'a PipelineLayout,
+    /// Pipeline layout. `None` selects wgpu's auto-derive path.
+    pub layout: Option<&'a PipelineLayout>,
     /// Compute shader module.
     pub module: &'a ShaderModule,
     /// Entry point name (e.g. `"cs_main"`).
@@ -409,13 +435,24 @@ impl ComputePipeline {
             .raw()
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(desc.label),
-                layout: Some(desc.layout.raw()),
+                layout: desc.layout.map(|l| l.raw()),
                 module: desc.module.raw(),
                 entry_point: Some(desc.entry_point),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
         Self { raw: Arc::new(raw) }
+    }
+
+    /// Query the per-set bind-group layout. When the pipeline was built
+    /// with an auto-derived layout (`ComputePipelineDesc.layout = None`),
+    /// this is the only way to retrieve the implicit layout that wgpu
+    /// synthesised from shader reflection — bind-group construction
+    /// keys against it.
+    pub fn bind_group_layout(&self, set_index: u32) -> BindGroupLayout {
+        BindGroupLayout {
+            raw: Arc::new(self.raw.get_bind_group_layout(set_index)),
+        }
     }
 
     /// Crate-internal access to the underlying `wgpu::ComputePipeline`.

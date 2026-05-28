@@ -28,7 +28,7 @@ struct PerFrame {
     camera_pos : vec4<f32>,
 };
 
-var<push_constant> push : PushConstants;
+var<immediate> push : PushConstants;
 @group(0) @binding(0) var<uniform> frame : PerFrame;
 
 struct VertexInput {

@@ -83,13 +83,15 @@ fn device_init_against_real_adapter() {
     drop(device);
 }
 
-/// ADR-075 contract: construct every Track-A WGSL pipeline. The Rust
-/// bind-group layouts must match the WGSL `@group/@binding`
-/// declarations. Marked `#[ignore]` until A.2 authors the per-pass
-/// bind-group layouts (currently the pipelines build with empty
-/// layouts; wgpu correctly rejects the first shader binding).
+/// ADR-075 contract: construct every Track-A WGSL pipeline. With ADR-075
+/// §8's A.2a auto-derive bootstrap, the pipeline layouts are synthesised
+/// from WGSL reflection — wgpu validates the WGSL `@group/@binding`
+/// declarations against vertex-buffer layouts + storage-texture formats
+/// at this point. Any shader edit that breaks the pipeline's expected
+/// shape fails here loudly with a named pass + ShaderError. A.3 will
+/// extend this with end-to-end pixel-parity fixtures driven by real
+/// scene fixtures.
 #[test]
-#[ignore = "A.2 wires per-pass bind-group layouts; remove when A.2 lands"]
 fn build_all_phase6_pipelines_against_real_device() {
     let Some(device) = try_device() else {
         return;

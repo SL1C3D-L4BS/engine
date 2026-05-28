@@ -228,24 +228,57 @@ path takes the new template; the CPU path is untouched. The
 pixel-parity oracle (ADR-046, this plan's A.3) compares the two
 end-to-end.
 
-### 8. Three sub-PRs
+### 8. A.2 sub-PR plan (revised after A.2a landed)
 
 The A.2 work splits into:
 
-- **A.2a — compute passes (7)** + the `bindgroups/` module skeleton +
-  the `ResourceResolver` trait surface. The render-graph attachment-
-  view plumbing is stubbed but not yet wired into `RenderGraph::execute`.
-  No render-pass body changes. Closes the compute half.
-- **A.2b — render-graph transient-pool allocator** +
-  `RenderGraph::execute` flowing the resolver through `PassContext` +
-  the 3 render-pass bodies (`CsmShadowPass`, `GBufferPass`,
-  `LightingAccumulationPass`) wired with `begin_render_pass` +
-  vertex/index/draw-indirect bindings. Closes the render half.
-- **A.2c (folded into A.2b)** — `init::bake_brdf_lut(device, queue) ->
-  engine_gpu::Texture` one-shot startup helper.
+- **A.2a — auto-derive pipeline bootstrap (landed 2026-05-27).** Took
+  a shorter path than the original A.2a plan above: instead of
+  authoring 11 `bindgroups/` modules upfront, the `engine-gpu`
+  pipeline descriptors gained an `Option<&PipelineLayout>` layout
+  field, with `None` selecting wgpu's auto-derive (wgpu introspects
+  the WGSL `@group/@binding`/`var<immediate>` declarations and
+  synthesises the layout). `crates/engine-render/src/shader.rs`'s
+  `build_compute_pipeline` and `build_render_pipeline` helpers pass
+  `None`, so all 11 + BRDF LUT pipelines construct cleanly via
+  reflection. The auto-derived layout is queryable per-set via
+  `RenderPipeline::bind_group_layout(set_index)` /
+  `ComputePipeline::bind_group_layout(set_index)`.
 
-When A.2b lands, `build_all_phase6_pipelines_against_real_device`
-removes its `#[ignore]` and joins the workspace gate.
+  A.2a also surfaced and resolved wgpu-29 / Naga-29 migration items
+  that the original PR-7 shaders pre-dated: `var<push_constant>` →
+  `var<immediate>`; `bgra8unorm_srgb` storage format → `bgra8unorm`
+  storage format with manual linear→sRGB encoding in the tonemap
+  shader (storage-texture writes bypass swapchain view sRGB
+  conversion); `engine-gpu::DeviceFeatures` gained `multiview` (CSM
+  `@builtin(view_index)` needs `VK_KHR_multiview`),
+  `adapter_specific_format_features` (R16Float storage write), and
+  `bgra8unorm_storage` (the tonemap swapchain-compatible output).
+  Mesh-vertex buffer layout (12 + 12 + 16 + 8 = 48 bytes per ADR-061)
+  added to shadow + gbuffer pipelines so the shader-input contract
+  matches the EMSH binary layout.
+
+  `build_all_phase6_pipelines_against_real_device` now passes in the
+  default workspace gate. The implicit bind-group layouts are queryable
+  for the record() bodies in A.2b.
+
+- **A.2b — resource resolver + record() body wiring.** The
+  `crates/engine-render/src/render_graph/views.rs` `ResourceResolver`
+  trait + the per-frame transient-pool allocator in
+  `RenderGraph::execute` + `PassContext.resources` field +
+  bind-group construction in each pass's `record()` body using the
+  pipeline's auto-derived layout (queried via
+  `pipeline.bind_group_layout(group_idx)`) + the 3 render-pass bodies
+  wired with `begin_render_pass` + vertex/index/draw-indirect
+  bindings + `init::bake_brdf_lut(device, queue) ->
+  engine_gpu::Texture` one-shot startup helper. Closes the dispatch
+  half.
+
+- **A.2c (optional, post-v0.3) — explicit `bindgroups/` modules per
+  pass.** The principled long-term home for the layouts; replaces
+  auto-derive on a per-pass basis. Lands as cleanup either alongside
+  A.3 (pixel-parity fixtures) or as a dedicated PR. Not required for
+  Engine Core v0.3.
 
 ## Rationale
 
