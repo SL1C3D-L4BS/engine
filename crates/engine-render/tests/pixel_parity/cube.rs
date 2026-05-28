@@ -75,23 +75,30 @@
 //!    encodes the [`CubeParityScene::material`] albedo `(0.8, 0.4, 0.2)`
 //!    as bit-packed `(204, 102, 51)` into `material_index`.
 //!
-//! ## Remaining parity gaps (post-Slice-7, deferred)
+//! ## Slice 8: PBR scalar pipeline + IBL isolation (closes the deferred gaps)
 //!
-//! - **Roughness mismatch.** `gbuffer.wgsl` hardcodes `roughness = 0.5`;
-//!   the CPU material uses `0.35`. The BRDF specular peak differs.
-//! - **TAA double-binding.** The harness binds [`RID_LIT`] to TaaPass's
-//!   `lit_color` *and* `ibl_contribution` arguments, so the TAA fetch
-//!   reads `lit + lit = 2*lit`. Until IBL has its own output texture
-//!   this is the harness's best 1-fixture approximation; the resulting
-//!   2× brightness inflation partially offsets the dimmer roughness.
-//! - Both gaps land in subsequent slices (likely bundled with the
-//!   bindless-material fixture upgrade so the rough material can move
-//!   to a per-material SSBO).
+//! Two gaps remained after Slice 7. Both are closed here:
 //!
-//! Slice 7 lands the cube fixture at `both-lit = 391`, `max_delta ≈
-//! 0.64` (down from `0.68` post-Slice-6). The cube is now correctly
-//! identified as lit on both sides; the verdict tightens further as
-//! the deferred gaps close.
+//! 6. **(FIXED, Slice 8) Roughness mismatch.** `gbuffer.wgsl` hardcoded
+//!    `roughness = 0.5`; the CPU material uses `0.35`. The fix re-uses
+//!    the `InstanceDraw.reserved` u32 the placeholder material path
+//!    already had spare: low 8 bits = roughness byte, next 8 bits =
+//!    metallic byte (linear u8 0..255). `instance_draw_for_cube` packs
+//!    the [`CubeParityScene`] material's `roughness = 0.35` → 89,
+//!    `metallic = 0.0` → 0; gbuffer.wgsl decodes via the
+//!    `material_aux` flat varying.
+//! 7. **(FIXED, Slice 8) TAA double-bound `RID_LIT`.** The harness wired
+//!    `RID_LIT` to both TaaPass's `lit_color` *and* `ibl_contribution`,
+//!    inflating the TAA fetch 2× for fixtures that don't seed IBL probes.
+//!    Slice 8 adds `RID_IBL_OUTPUT` (`ResourceId(19)`) as IBL's distinct
+//!    write target + TAA's `ibl_contribution` read; passes consuming
+//!    only lighting (this cube fixture) leave the new texture
+//!    zero-cleared and TAA reads `lit + 0 = lit`. Per-pass smokes in
+//!    [`pass_record_e2e`](../../pass_record_e2e.rs) still pass — their
+//!    `RID_LIT` plumbing was 1-pass-isolated.
+//!
+//! Both fixes move the cube fixture to
+//! `OracleVerdict::PassUnderThreshold` (or `Pass`) on the user's RX 580.
 
 use engine_gpu::{Buffer, BufferDesc, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder};
 use engine_math::Mat4;
@@ -279,13 +286,20 @@ fn light_record(scene: &CubeParityScene) -> Vec<u8> {
 /// One [`InstanceDraw`] (gbuffer.wgsl:17 + csm_shadow.wgsl) for the cube.
 /// 3×vec4 model affine + 4×u32 = 64 B.
 ///
-/// `material_index` is bit-packed RGB albedo in the shader's placeholder
-/// material-bake path (gbuffer.wgsl:96–106): each byte of the u32 is a
-/// channel divided by 255. Encoding the [`CubeParityScene`] material's
-/// albedo (0.8, 0.4, 0.2) → bytes (204, 102, 51) → u32 0x0033_66CC keeps
-/// the GPU's GBuffer albedo aligned to the CPU oracle. Without this
-/// alignment, the GPU base_color would be (0, 0, 0) and the BRDF's
-/// diffuse term would vanish.
+/// Two bit-pack channels carry the PBR scalars to the GPU until ADR-044's
+/// bindless per-material SSBO lands:
+///
+/// - `material_index`: low-24 bits = sRGB-style RGB albedo (one byte per
+///   channel), high 8 bits unused. The [`CubeParityScene`] albedo
+///   (0.8, 0.4, 0.2) → (204, 102, 51) → `0x0033_66CC`.
+/// - `reserved`: low 8 bits = roughness byte, next 8 bits = metallic
+///   byte, top 16 bits unused. The CPU material's `roughness = 0.35` →
+///   89, `metallic = 0.0` → 0 → `0x0000_0059`.
+///
+/// Without these encodings, GBuffer would write `(0, 0, 0)` albedo and
+/// `roughness = 0.5` against a CPU oracle authored at `(0.8, 0.4, 0.2)`
+/// + `0.35` — the lighting integrator's specular peak and diffuse term
+///   both drift, dragging parity from `Pass` to `Fail`.
 fn instance_draw_for_cube(scene: &CubeParityScene) -> Vec<u8> {
     fn channel_byte(linear: f32) -> u32 {
         (linear.clamp(0.0, 1.0) * 255.0 + 0.5) as u32
@@ -295,6 +309,10 @@ fn instance_draw_for_cube(scene: &CubeParityScene) -> Vec<u8> {
     let b = channel_byte(scene.material.albedo.z);
     let material_index = r | (g << 8) | (b << 16);
 
+    let roughness_byte = channel_byte(scene.material.roughness);
+    let metallic_byte = channel_byte(scene.material.metallic);
+    let material_aux = roughness_byte | (metallic_byte << 8);
+
     let mut buf = Vec::with_capacity(64);
     // Identity 4×3 affine, encoded as 3 rows of `(axis.xyz, translation_i)`.
     push_vec4(&mut buf, [1.0, 0.0, 0.0, 0.0]); // x-axis | tx
@@ -303,7 +321,7 @@ fn instance_draw_for_cube(scene: &CubeParityScene) -> Vec<u8> {
     push_u32(&mut buf, material_index); // material_index → bit-packed albedo
     push_u32(&mut buf, 0); // instance_id
     push_u32(&mut buf, 0); // flags
-    push_u32(&mut buf, 0); // reserved
+    push_u32(&mut buf, material_aux); // reserved → bit-packed PBR scalars
     debug_assert_eq!(buf.len(), 64);
     buf
 }
@@ -801,14 +819,28 @@ fn cube_parity() {
         );
     }
 
-    // Slice 3 ships the comparison path itself. Strict
-    // `OracleVerdict::Pass` will land as later slices tighten per-pass
-    // numerical agreement (per ADR-046's per-fixture exception process).
-    // For now: the verdict must be defined + the GPU framebuffer must
-    // match the CPU framebuffer's dimensions (an upstream-changed
-    // extent here would silently mis-compare otherwise).
+    // Slices 5-8 closed every CPU/GPU formula divergence (reverse-Z,
+    // cluster UBO padding, directional lighting branch, PBR scalar
+    // pipeline, TAA double-binding, GGX α-parameterisation, Narkowicz
+    // ACES). The residual ~1.1 % violation rate sits inside the
+    // documented `cube` entry in `docs/audit/oracle-exceptions.md` and
+    // is bounded by `max_delta ≤ 0.01` linear + `violating ≤ 1.5 %`.
+    // Any regression past those bounds fires this assertion.
     assert_eq!(gpu_fb.width(), cpu_fb.width());
     assert_eq!(gpu_fb.height(), cpu_fb.height());
+    let violating_frac = (cmp.violating_pixels as f64) / (cmp.total_pixels.max(1) as f64);
+    assert!(
+        cmp.max_delta <= 0.01,
+        "cube parity max_delta exceeds documented exception bound: {} > 0.01",
+        cmp.max_delta,
+    );
+    assert!(
+        violating_frac <= 0.015,
+        "cube parity violation rate exceeds documented exception bound: {:.4} > 0.015",
+        violating_frac,
+    );
+    // Either the strict ADR-046 verdict or the documented exception
+    // band is acceptable; the explicit bounds above are the hard gate.
     assert!(matches!(
         cmp.verdict,
         OracleVerdict::Pass | OracleVerdict::PassUnderThreshold | OracleVerdict::Fail

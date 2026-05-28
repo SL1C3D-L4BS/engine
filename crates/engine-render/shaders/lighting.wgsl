@@ -49,10 +49,23 @@ struct ClusterUniforms {
 
 const PI : f32 = 3.14159265358979;
 
+// Source-of-truth: `engine_raster::shading::cook_torrance` (CPU oracle).
+//
+// "Roughness" is the perceptual UE/Disney convention. The GGX α is the
+// inner square (α = roughness²); α² in the NDF is therefore roughness⁴.
+// Smith-Schlick's k follows GGX's α, not the perceptual roughness, so
+// k = (α + 1)² / 8 = (roughness² + 1)² / 8.
+//
+// Earlier revisions of this shader collapsed both squares into one
+// (`a2 = roughness²`, `k = (roughness + 1)² / 8`), which silently
+// reparameterised the BRDF — fragments with a CPU-authored roughness
+// of 0.35 would specular-peak as if they were ~0.59 on the GPU. Pixel
+// parity surfaced the drift; aligning the two formulae closes the gap.
 fn ggx_d(n_dot_h : f32, roughness : f32) -> f32 {
-    let a2 = roughness * roughness;
-    let denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
-    return a2 / (PI * denom * denom);
+    let alpha = roughness * roughness;
+    let alpha2 = alpha * alpha;
+    let denom = n_dot_h * n_dot_h * (alpha2 - 1.0) + 1.0;
+    return alpha2 / max(PI * denom * denom, 1e-6);
 }
 
 fn smith_g1(n_dot_v : f32, k : f32) -> f32 {
@@ -60,7 +73,8 @@ fn smith_g1(n_dot_v : f32, k : f32) -> f32 {
 }
 
 fn smith_g(n_dot_v : f32, n_dot_l : f32, roughness : f32) -> f32 {
-    let r = roughness + 1.0;
+    let alpha = roughness * roughness;
+    let r = alpha + 1.0;
     let k = (r * r) / 8.0;
     return smith_g1(n_dot_v, k) * smith_g1(n_dot_l, k);
 }

@@ -175,10 +175,13 @@ mod tests {
 
     #[test]
     fn tonemap_shader_implements_aces_filmic() {
+        // Phase 5.5 A.3 Slice 8: aligned to the Narkowicz 2015 ACES fit
+        // (`engine_raster::post_fx::tonemap_aces`); the prior Hill 2017
+        // RRT/ODT fit diverged from the CPU oracle by a constant
+        // `white_point` divisor and was the largest contributor to
+        // pre-Slice-8 parity gap.
         assert_contains(TONEMAP_WGSL, "@compute", "tonemap.wgsl");
-        assert_contains(TONEMAP_WGSL, "aces_input", "tonemap.wgsl");
-        assert_contains(TONEMAP_WGSL, "rrt_odt_fit", "tonemap.wgsl");
-        assert_contains(TONEMAP_WGSL, "aces_output", "tonemap.wgsl");
+        assert_contains(TONEMAP_WGSL, "aces_narkowicz_component", "tonemap.wgsl");
         assert_contains(TONEMAP_WGSL, "aces_filmic", "tonemap.wgsl");
     }
 }

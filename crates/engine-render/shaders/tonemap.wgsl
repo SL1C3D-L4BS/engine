@@ -1,11 +1,14 @@
-// TonemapPass — ACES filmic (Stephen Hill fit) (ADR-065 §6).
+// TonemapPass — Narkowicz 2015 ACES fit (ADR-065 §6).
 //
 // Workgroup: (8, 8, 1). Reads TaaResolvedColor + BloomTexture;
 // writes TonemappedColor (Bgra8Unorm storage, with manual linear → sRGB
 // encoding before `textureStore` since storage-texture writes bypass
 // the swapchain view's implicit format conversion).
 //
-// Source-of-truth: `engine_raster::post_fx::aces_filmic_tonemap`.
+// Source-of-truth: `engine_raster::post_fx::tonemap_aces`. Earlier
+// revisions imported the Hill 2017 RRT/ODT fit with a `white_point`
+// divisor of 11.2; aligning to the CPU oracle's curve closed an
+// undocumented ~5× brightness mismatch at parity time.
 
 // Per-component linear → sRGB conversion (IEC 61966-2-1).
 fn linear_to_srgb_component(c : f32) -> f32 {
@@ -36,35 +39,27 @@ struct TonemapUniforms {
 @group(2) @binding(2) var lin_sampler : sampler;
 @group(2) @binding(3) var dst : texture_storage_2d<bgra8unorm, write>;
 
-// ACES input transform.
-fn aces_input(v : vec3<f32>) -> vec3<f32> {
-    let m = mat3x3<f32>(
-        vec3<f32>(0.59719, 0.07600, 0.02840),
-        vec3<f32>(0.35458, 0.90834, 0.13383),
-        vec3<f32>(0.04823, 0.01566, 0.83777),
-    );
-    return m * v;
-}
-
-// ACES RRT + ODT fit (Stephen Hill).
-fn rrt_odt_fit(v : vec3<f32>) -> vec3<f32> {
-    let a = v * (v + vec3<f32>(0.0245786)) - vec3<f32>(0.000090537);
-    let b = v * (0.983729 * v + vec3<f32>(0.4329510)) + vec3<f32>(0.238081);
-    return a / b;
-}
-
-// ACES output transform.
-fn aces_output(v : vec3<f32>) -> vec3<f32> {
-    let m = mat3x3<f32>(
-        vec3<f32>(1.60475, -0.10208, -0.00327),
-        vec3<f32>(-0.53108, 1.10813, -0.07276),
-        vec3<f32>(-0.07367, -0.00605, 1.07602),
-    );
-    return m * v;
+// Narkowicz 2015 ACES rational fit, matching the CPU oracle's
+// `tonemap_aces`. `white_point` is preserved in the UBO for the bloom
+// composition path (intensity scaling), but the tonemap curve itself
+// does not divide by it — the CPU oracle does no such divide.
+fn aces_narkowicz_component(x : f32) -> f32 {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    let num = x * (a * x + b);
+    let den = x * (c * x + d) + e;
+    return clamp(num / den, 0.0, 1.0);
 }
 
 fn aces_filmic(v : vec3<f32>) -> vec3<f32> {
-    return clamp(aces_output(rrt_odt_fit(aces_input(v))), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec3<f32>(
+        aces_narkowicz_component(max(v.x, 0.0)),
+        aces_narkowicz_component(max(v.y, 0.0)),
+        aces_narkowicz_component(max(v.z, 0.0)),
+    );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -76,8 +71,13 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(dim);
     let scene = textureSampleLevel(taa_resolved, lin_sampler, uv, 0.0).rgb;
     let bloom_sample = textureSampleLevel(bloom, lin_sampler, uv, 0.0).rgb;
+    // Bloom composition is a linear add scaled by `bloom_mix`; the
+    // `white_point` UBO field stays available to scale bloom intensity
+    // before the curve, matching the CPU oracle's
+    // `post_fx::bloom_composite + tonemap_aces` chain.
+    _ = tonemap.white_point;
     let mixed = mix(scene, scene + bloom_sample, tonemap.bloom_mix);
-    let exposed = mixed * tonemap.exposure / max(tonemap.white_point, 1e-4);
+    let exposed = mixed * tonemap.exposure;
     let mapped = aces_filmic(exposed);
     // Storage-texture writes bypass the swapchain view's implicit
     // linear → sRGB conversion; encode manually so the displayed

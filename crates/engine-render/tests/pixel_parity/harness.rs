@@ -84,6 +84,7 @@ pub const RID_TAA_HISTORY_NEXT: ResourceId = ResourceId(15); // next-frame histo
 pub const RID_TAA_RESOLVED: ResourceId = ResourceId(16); // resolved HDR
 pub const RID_BLOOM: ResourceId = ResourceId(17); // bloom mip chain
 pub const RID_TONEMAPPED: ResourceId = ResourceId(18); // final LDR
+pub const RID_IBL_OUTPUT: ResourceId = ResourceId(19); // IBL contribution (distinct from RID_LIT)
 
 // Auxiliary (non-graph-flow) resources — UBOs, samplers, secondary SSBOs.
 pub const RID_FRUSTUM_UBO: ResourceId = ResourceId(50);
@@ -252,7 +253,10 @@ impl ParityHarness {
             RID_GBUF_AR,
             RID_GBUF_NM,
             RID_DEPTH,
-            RID_LIT,
+            // IBL writes to a distinct HDR texture; the TAA `fetch` adds
+            // `current_color + ibl_contribution`. Sharing RID_LIT with
+            // LightingAccumulationPass would double-bind TAA's reads.
+            RID_IBL_OUTPUT,
             RID_IBL_UBO,
             RID_BRDF_SAMPLER,
         ));
@@ -277,7 +281,11 @@ impl ParityHarness {
             RID_DEPTH,
             RID_TAA_RESOLVED,
             RID_TAA_HISTORY_NEXT,
-            RID_LIT,
+            // Separate IBL output channel; without this the TAA fetch
+            // double-counts lighting (`lit + lit = 2*lit`). When IBL
+            // probes are unseeded the texture stays zero-cleared and
+            // TAA reduces to `lit + 0`.
+            RID_IBL_OUTPUT,
             RID_TAA_UBO,
             RID_LINEAR_SAMPLER,
         ));
@@ -384,6 +392,7 @@ impl Pool {
         // ---- shadow atlas + lit + IBL etc. ----
         let shadow = shadow_atlas(device, "parity.shadow.atlas");
         let lit = hdr_storage_target(device, "parity.lit", width, height);
+        let ibl_output = hdr_storage_target(device, "parity.ibl.output", width, height);
         let ssao = ssao_target(device, "parity.ssao", width / 2, height / 2);
         let taa_history = hdr_storage_target(device, "parity.taa.history", width, height);
         let taa_history_next = hdr_storage_target(device, "parity.taa.history.next", width, height);
@@ -397,6 +406,7 @@ impl Pool {
         table.register_texture(RID_DEPTH, depth);
         table.register_texture(RID_SHADOW_ATLAS, shadow);
         table.register_texture(RID_LIT, lit);
+        table.register_texture(RID_IBL_OUTPUT, ibl_output);
         table.register_texture(RID_SSAO, ssao);
         table.register_texture(RID_TAA_HISTORY, taa_history);
         table.register_texture(RID_TAA_HISTORY_NEXT, taa_history_next);

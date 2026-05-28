@@ -28,9 +28,7 @@ quotes the bench output and explains the exception.
 
 | Fixture | Violation | Vendor / Driver | Rationale | ADR / PR |
 |---------|-----------|-----------------|-----------|----------|
-
-_(no active exceptions as of 2026-05-26 — the GPU runner is not yet
-provisioned)_
+| `cube` | p99 ≤ 1.5 % / max_delta ≤ 0.01 linear | Mesa RADV 26.1.1 on Polaris (RX 580) | After aligning CPU+GPU GGX (α² parameterisation), Smith-Schlick k, and Narkowicz ACES tonemap, the residual ~1.1 % violating pixels are confined to the brightest specular-peak region where f32 precision drift between scalar CPU and RADV-compiled GPU diverges at the last byte. Worst observed pixel: cpu=(216,177,120) vs gpu=(216,178,121) — off-by-one in two channels. | Phase 5.5 A.3 Slice 8 |
 
 ## Sunset exceptions
 

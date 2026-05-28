@@ -51,6 +51,7 @@ struct VertexOutput {
     @location(4) prev_clip : vec4<f32>,
     @location(5) @interpolate(flat) material_index : u32,
     @location(6) @interpolate(flat) instance_id : u32,
+    @location(7) @interpolate(flat) material_aux : u32,
 };
 
 fn unpack_model(p : InstanceDraw) -> mat4x4<f32> {
@@ -83,6 +84,11 @@ fn vs_main(input : VertexInput, @builtin(instance_index) iid : u32) -> VertexOut
     out.prev_clip = prev;
     out.material_index = inst.material_index;
     out.instance_id = inst.instance_id;
+    // Bit-packed PBR scalars in `reserved`: low 8b roughness, next 8b
+    // metallic (each linear u8 0..255). Companion placeholder to the
+    // RGB bit-pack in `material_index`; both move to a bindless
+    // per-material SSBO when ADR-044's heap activates.
+    out.material_aux = inst.reserved;
     return out;
 }
 
@@ -104,8 +110,11 @@ fn fs_main(in : VertexOutput) -> GBufferOutput {
         f32((in.material_index >> 8u) & 0xffu) / 255.0,
         f32((in.material_index >> 16u) & 0xffu) / 255.0,
     );
-    let roughness = 0.5;
-    let metallic = 0.0;
+    // Bit-packed roughness/metallic from `reserved` — see vs_main.
+    // Both default to 0 (rough mirror) when the auxiliary word is
+    // zero-initialised, which matches what the per-pass smokes seed.
+    let roughness = f32((in.material_aux >> 0u) & 0xffu) / 255.0;
+    let metallic = f32((in.material_aux >> 8u) & 0xffu) / 255.0;
 
     // Motion vector: NDC delta between current and previous frame.
     let prev_ndc = in.prev_clip.xy / max(in.prev_clip.w, 1e-6);
