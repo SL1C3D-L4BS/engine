@@ -1,0 +1,11 @@
+# ONNX temporal upscaler v1 training pipeline (ADR-080).
+# Pinned exact versions for reproducibility — see ADR-080 §2.
+
+torch==2.5.1
+torchvision==0.20.1
+numpy==2.0.2
+Pillow==10.4.0
+onnx==1.17.0
+onnxruntime==1.20.1
+scikit-image==0.24.0
+tqdm==4.66.5

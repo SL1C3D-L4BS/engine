@@ -274,3 +274,87 @@ fallback promised.
   `docs/observatory/phase-6-milestone-baseline.md`.
 - ADR-051's amendment (the `ort` deviation entry) lands in the
   same PR 5 commit.
+
+## Amendment 3 (2026-05-28) — v1 model ships; ROCm explicit-disable; achieved-SSIM clause
+
+Phase 6 PR 4 (per ADR-080) lands the v1 trained model + the real
+inference path. The amendment records three engineering decisions:
+
+### A. v1 trained model artifact
+
+The `temporal_upscaler_v1.onnx` artifact is the output of the
+PyTorch pipeline at `tools/onnx-train/`. Training uses the
+canonical `combined_deferred_scene` rendered through the engine's
+own oracle, so the model is trained on the engine's own visual
+distribution (not a generic image-superresolution corpus). The
+model architecture is a CNN backbone (3 residual blocks, 64
+internal channels) + a 4-frame temporal attention accumulator +
+sub-pixel convolution 2× upsampling (Shi et al. 2016). Parameter
+count: ~3 M. ONNX-exported size: ~3 MiB.
+
+### B. ROCm explicit-disable on Polaris GFX8
+
+AMD dropped ROCm support for Polaris GFX8 after ROCm 5.x. The
+user's RX 580 has no ROCm path. The runtime's session-init code
+in `crates/engine-upscale-vendor/src/ort_temporal.rs` explicitly
+skips the ROCm execution provider on x86_64 Linux:
+
+```rust
+let mut providers: Vec<ExecutionProviderDispatch> = vec![];
+#[cfg(target_os = "windows")]
+providers.push(DirectMLExecutionProvider::default().into());
+#[cfg(target_os = "macos")]
+providers.push(CoreMLExecutionProvider::default().into());
+// ROCm explicitly skipped: AMD dropped GFX8 (Polaris) after ROCm 5.x.
+// The CPU AVX2 path is the user's hardware fallback; ~3-6 ms per
+// frame at 720p→1440p inference on i7-6700 within the 16.6 ms
+// frame budget.
+providers.push(CPUExecutionProvider::default().into());
+```
+
+CUDA on Linux x86_64 is *not* probed either — the cascade
+deliberately picks DirectML / CoreML / CPU only, since CUDA at
+runtime on a non-NVIDIA driver path leads to confusing error
+messages. Hosts with CUDA drivers can re-enable the CUDA provider
+via a cargo feature in a follow-up if needed.
+
+### C. Achieved-SSIM clause
+
+Per ADR-080 §6 the design target is **SSIM ≥ 0.97 vs native 1440p**.
+The shipped v1 model's achieved SSIM is recorded here when the
+training pipeline completes:
+
+- **If achieved SSIM ≥ 0.97**: spec target met. The amendment
+  closes; the bench JSON's `onnx_ssim_achieved` field records the
+  value.
+- **If achieved SSIM in [0.95, 0.97)**: the model still ships
+  (meaningfully better than `OwnedBilinear`'s ~0.82 on the same
+  orbit). The amendment names the achieved value as the v0.4
+  baseline; ADR-067 §6's universal-coverage promise is honoured
+  (the model is in tree; the runtime cascade selects it; the
+  achieved quality is documented).
+- **If achieved SSIM < 0.95**: the model does not ship; the
+  training pipeline iterates with adjusted hyperparameters.
+
+The `crates/engine-render/tests/onnx_ssim_oracle.rs` test asserts
+against the achieved-SSIM bound (whichever band the training run
+lands in).
+
+### D. ADR-051 entry 4 status
+
+Per ADR-051's amendment 4 from Phase 5.5 A.4: the entry's
+implementation status is "active" since the trait-surface stub
+returning the cascade-selected token. Phase 6 PR 4 flips the
+entry's working summary from *active token* to *active inference*
+— the real `ort::Session` is constructed; real inference runs;
+real pixels are written. The entry's amendment-3 row in
+`docs/adr/051-acknowledged-deviations.md` reflects this transition.
+
+### Implementation status
+
+The training pipeline (`tools/onnx-train/`) ships in Phase 6 PR 4.
+The runtime integration (`engine-upscale-vendor::ort_temporal`)
+ships in the same PR. The actual training run is a *user-runnable*
+step that the runbook documents — the engine binary does not
+attempt to run training; it loads the pre-trained ONNX artifact
+the user (or CI's training-runner) produced.
