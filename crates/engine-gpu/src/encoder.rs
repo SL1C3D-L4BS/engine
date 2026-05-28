@@ -299,6 +299,35 @@ impl RenderPass<'_> {
     pub fn draw_indexed_indirect(&mut self, buffer: &Buffer, offset: u64) {
         self.raw.draw_indexed_indirect(buffer.raw(), offset);
     }
+
+    /// Issue up to `max_count` indirect indexed draws — the GPU reads
+    /// `count_buffer[count_offset..count_offset+4]` as a `u32` for the
+    /// actual draw count and then consumes that many
+    /// `DrawIndexedIndirect` structs from `indirect_buffer` starting at
+    /// `indirect_offset`. The `CullPass` produces the
+    /// `indirect_buffer` (per-survivor `DrawIndexedIndirect`) + the
+    /// `count_buffer` (atomic `u32`).
+    ///
+    /// Requires [`crate::DeviceFeatures::multi_draw_indirect_count`].
+    /// Callers must short-circuit when the device does not advertise it
+    /// (`Polaris/RADV` advertises it; older hosts do not — the affected
+    /// pass falls back to its A.2c clear-only path).
+    pub fn multi_draw_indexed_indirect_count(
+        &mut self,
+        indirect_buffer: &Buffer,
+        indirect_offset: u64,
+        count_buffer: &Buffer,
+        count_offset: u64,
+        max_count: u32,
+    ) {
+        self.raw.multi_draw_indexed_indirect_count(
+            indirect_buffer.raw(),
+            indirect_offset,
+            count_buffer.raw(),
+            count_offset,
+            max_count,
+        );
+    }
 }
 
 impl core::fmt::Debug for RenderPass<'_> {

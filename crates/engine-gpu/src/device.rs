@@ -87,6 +87,22 @@ pub struct DeviceFeatures {
     /// supports it natively (BGRA8 is the X11 / Wayland-preferred
     /// layout); absence forces an Rgba8Unorm intermediate + blit.
     pub bgra8unorm_storage: bool,
+    /// `MULTI_DRAW_INDIRECT_COUNT` — `vkCmdDrawIndexedIndirectCountKHR`
+    /// reads the draw count from a GPU buffer (the CullPass's
+    /// `draw_count` atomic in ADR-064 §7). Required by A.2d.b's
+    /// indirect-draw consumption path on CsmShadowPass + GBufferPass.
+    /// Polaris/RADV exposes `VK_KHR_draw_indirect_count`; absence
+    /// forces the affected passes to short-circuit (the A.2c clear-
+    /// only behaviour).
+    pub multi_draw_indirect_count: bool,
+    /// `INDIRECT_FIRST_INSTANCE` — non-zero `first_instance` field in
+    /// the indirect-draw argument struct (ADR-064 §7's CullPass writes
+    /// `first_instance = entry.instance_id`, which the vertex shader
+    /// uses via `@builtin(instance_index)` to look up the per-instance
+    /// SSBO record). Polaris/RADV supports `drawIndirectFirstInstance`;
+    /// absence requires re-routing the instance lookup through a
+    /// parallel slot-indexed SSBO.
+    pub indirect_first_instance: bool,
 }
 
 /// Owned GPU device handle.
@@ -181,6 +197,10 @@ impl Device {
             adapter_specific_format_features: adapter_features
                 .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
             bgra8unorm_storage: adapter_features.contains(wgpu::Features::BGRA8UNORM_STORAGE),
+            multi_draw_indirect_count: adapter_features
+                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
+            indirect_first_instance: adapter_features
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
         };
 
         let mut required_features = wgpu::Features::empty();
@@ -198,6 +218,19 @@ impl Device {
         }
         if features.bgra8unorm_storage {
             required_features |= wgpu::Features::BGRA8UNORM_STORAGE;
+        }
+        if features.multi_draw_indirect_count {
+            // Enables `RenderPass::multi_draw_indexed_indirect_count` —
+            // ADR-064 §7's per-frame indirect path for CSM + G-buffer.
+            // wgpu 29 surfaces the count-variant under this single
+            // feature flag; the non-count `multi_draw_indexed_indirect`
+            // is always callable (potentially emulated when the flag
+            // is absent — but the engine's path requires the count
+            // buffer's GPU-side atomic).
+            required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+        }
+        if features.indirect_first_instance {
+            required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
         }
 
         // wgpu's `Limits::downlevel_defaults()` (Tier1Minimum) sets
@@ -408,5 +441,7 @@ mod tests {
         assert!(!f.bc_hdr);
         assert!(!f.push_constants);
         assert!(!f.descriptor_indexing);
+        assert!(!f.multi_draw_indirect_count);
+        assert!(!f.indirect_first_instance);
     }
 }

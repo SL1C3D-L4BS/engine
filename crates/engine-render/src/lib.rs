@@ -90,8 +90,8 @@ pub use init::{
     Phase6Pipelines, bake_brdf_lut, build_all_phase6_pipelines, build_brdf_lut_bake_pipeline,
 };
 pub use passes::{
-    BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, IblPass,
-    LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass, UpscalePass,
+    BloomPass, ClusterLightPass, CsmShadowPass, CullPass, GBufferPass, INDIRECT_DRAW_MAX_COUNT,
+    IblPass, LightingAccumulationPass, SsaoPass, TaaPass, TonemapPass, UpscalePass,
 };
 pub use render_graph::{
     GpuFrameContext, Pass, PassContext, RenderGraph, Resource, ResourceId, ResourceKind,

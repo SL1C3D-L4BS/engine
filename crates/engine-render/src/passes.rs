@@ -66,6 +66,15 @@ use engine_shader::Stage;
 /// instances).
 const INSTANCE_ENTRY_SIZE: u64 = 48;
 
+/// Cap on per-frame indirect draws consumed by
+/// `multi_draw_indexed_indirect_count` (Phase 5.5 A.2d.b — CsmShadowPass +
+/// GBufferPass). The GPU reads the actual count from CullPass's
+/// `draw_count` atomic and stops there; this max bounds the upper edge of
+/// the indirect-draws SSBO so a runaway count doesn't read past the
+/// buffer. Sized to the v0.3 scene budget (1024 visible instances per
+/// frame); the parity-fixture rigs in A.3 stay well under this.
+pub const INDIRECT_DRAW_MAX_COUNT: u32 = 1024;
+
 /// Helper: extract `(width, height)` from a [`engine_gpu::TextureView`]
 /// for dispatch-count derivation in screen-space compute passes.
 /// The `TextureView`'s extent comes from the underlying [`Texture`]
@@ -472,14 +481,35 @@ impl Pass for CullPass {
 
 /// 4-cascade CSM (ADR-040). One dispatch per cascade; each renders the
 /// `ShadowCasters` queue into its quadrant of the 4096² atlas.
+///
+/// Phase 5.5 A.2d.b: consumes the [`CullPass`] output via
+/// `multi_draw_indexed_indirect_count` — one indirect call per cascade
+/// (the WGSL `@builtin(view_index)` multiview path renders all four
+/// cascades from a single draw stream).
 #[derive(Debug)]
 pub struct CsmShadowPass {
-    /// Per-shadow-caster instance queue.
+    /// Per-shadow-caster instance queue. Pre-A.2d.b name kept; the
+    /// SSBO is now the per-instance draw record SSBO consumed via
+    /// `@builtin(instance_index)` (`shaders/csm_shadow.wgsl`
+    /// `@group(0) @binding(0)`).
     pub shadow_casters: ResourceId,
     /// 4096² D32F shadow atlas (depth attachment).
     pub shadow_atlas: ResourceId,
     /// CSM uniforms UBO (`@group(1) @binding(0)`).
     pub csm_uniforms: ResourceId,
+    /// Mesh vertex buffer (interleaved EMSH layout per
+    /// [`MESH_VERTEX_ATTRIBUTES`]). Phase 5.5 A.2d.b: shared with
+    /// [`GBufferPass`] in the v0.3 single-mesh-pool design.
+    pub vertex_buffer: ResourceId,
+    /// Mesh index buffer (u32, EMSH index format).
+    pub index_buffer: ResourceId,
+    /// Indirect-draw SSBO produced by [`CullPass`] —
+    /// `array<DrawIndirect>` with one entry per surviving instance.
+    pub indirect_draws: ResourceId,
+    /// Draw-count atomic SSBO produced by [`CullPass`] — single
+    /// `u32` the GPU reads via
+    /// `multi_draw_indexed_indirect_count`.
+    pub draw_count: ResourceId,
     pipeline: Option<RenderPipeline>,
 }
 
@@ -489,11 +519,19 @@ impl CsmShadowPass {
         shadow_casters: ResourceId,
         shadow_atlas: ResourceId,
         csm_uniforms: ResourceId,
+        vertex_buffer: ResourceId,
+        index_buffer: ResourceId,
+        indirect_draws: ResourceId,
+        draw_count: ResourceId,
     ) -> Self {
         Self {
             shadow_casters,
             shadow_atlas,
             csm_uniforms,
+            vertex_buffer,
+            index_buffer,
+            indirect_draws,
+            draw_count,
             pipeline: None,
         }
     }
@@ -508,6 +546,9 @@ impl Pass for CsmShadowPass {
     }
     fn reads(&self, set: &mut ResourceSet) {
         set.add(self.shadow_casters);
+        // Phase 5.5 A.2d.b — declares the cull pass's output as a
+        // dependency so the graph topo-sorts cull before shadow.
+        set.add(self.indirect_draws);
     }
     fn writes(&self, set: &mut ResourceSet) {
         set.add(self.shadow_atlas);
@@ -519,21 +560,14 @@ impl Pass for CsmShadowPass {
     fn record(&mut self, ctx: &mut PassContext) {
         // ADR-075 §1 — six-step template, depth-only render pass.
         //
-        // The pass opens a depth-only render pass against the shadow
-        // atlas and clears the depth attachment (reverse-Z convention
-        // clears to 0.0 at the far plane). Per-draw push constants +
-        // vertex/index/indirect binding for the
-        // `ShadowCasters` queue land in A.2d — they require:
-        // (a) Per-draw push constants flow (the WGSL `var<immediate>`
-        //     declaration), and
-        // (b) Indirect-draw consumption pattern (one `draw_indexed_indirect`
-        //     per surviving caster after culling, or a WGSL refactor
-        //     to read model transforms from a per-instance SSBO).
-        //
-        // The clear is meaningful work: subsequent passes that sample
-        // the shadow atlas without a writer would otherwise see
-        // undefined depth. Step 5 lays the pass scope; A.2d fills in
-        // the draws.
+        // A.2d.b: opens the depth-only pass against the shadow atlas
+        // (reverse-Z clear at 0.0), binds the per-instance SSBO + the
+        // CSM UBO + the mesh VB/IB, and issues one
+        // `multi_draw_indexed_indirect_count` against the CullPass's
+        // indirect-draw + draw-count buffers. The shader's
+        // `@builtin(view_index)` multiview path renders all four
+        // cascades from a single submission (Polaris/RADV exposes
+        // VK_KHR_multiview).
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
@@ -543,12 +577,54 @@ impl Pass for CsmShadowPass {
         let Some(resources) = ctx.resources else {
             return;
         };
-        let Some(_csm_u) = resources.resolve_buffer(self.csm_uniforms) else {
+        let Some(instances) = resources.resolve_buffer(self.shadow_casters) else {
+            return;
+        };
+        let Some(csm_u) = resources.resolve_buffer(self.csm_uniforms) else {
             return;
         };
         let Some(atlas) = resources.resolve_view(self.shadow_atlas) else {
             return;
         };
+        let Some(vb) = resources.resolve_buffer(self.vertex_buffer) else {
+            return;
+        };
+        let Some(ib) = resources.resolve_buffer(self.index_buffer) else {
+            return;
+        };
+        let Some(draws) = resources.resolve_buffer(self.indirect_draws) else {
+            return;
+        };
+        let Some(draw_count) = resources.resolve_buffer(self.draw_count) else {
+            return;
+        };
+
+        // Build bind groups against the auto-derived layouts.
+        let layout_instances = pipeline.bind_group_layout(0);
+        let layout_csm = pipeline.bind_group_layout(1);
+        let bg_instances = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "shadow.bindgroup.0",
+                layout: &layout_instances,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(instances),
+                }],
+            },
+        );
+        let bg_csm = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "shadow.bindgroup.1",
+                layout: &layout_csm,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(csm_u),
+                }],
+            },
+        );
+
         // Depth-only render pass; reverse-Z clear at 0.0 (far plane).
         let mut rpass = gpu.encoder.begin_render_pass_desc(&RenderPassDesc {
             label: "shadow.renderpass",
@@ -560,9 +636,24 @@ impl Pass for CsmShadowPass {
             }),
         });
         rpass.set_pipeline(pipeline);
-        // A.2d: per-cascade viewport + per-draw push constants +
-        // `draw_indexed_indirect` against the cull pass's draw-arg
-        // buffer. Until then the pass clears the atlas and ends.
+        rpass.set_bind_group(0, &bg_instances);
+        rpass.set_bind_group(1, &bg_csm);
+        rpass.set_vertex_buffer(0, vb);
+        rpass.set_index_buffer_u32(ib);
+        // A.2d.b — consume the CullPass's indirect-draw stream via the
+        // count-aware variant so unused slots in the fixed-size draws
+        // SSBO are skipped. Feature-gated: hosts without
+        // `MULTI_DRAW_INDIRECT_COUNT` short-circuit before the call —
+        // the atlas-clear behaviour matches the A.2c state.
+        if gpu.device.features().multi_draw_indirect_count {
+            rpass.multi_draw_indexed_indirect_count(
+                draws,
+                0,
+                draw_count,
+                0,
+                INDIRECT_DRAW_MAX_COUNT,
+            );
+        }
     }
 }
 
@@ -701,10 +792,20 @@ impl Pass for ClusterLightPass {
 /// Deferred MRT G-buffer pass (`draw.opaque`). Writes
 /// albedo+roughness, normal+metallic, motion+depth, plus the hardware
 /// depth attachment.
+///
+/// Phase 5.5 A.2d.b: consumes the [`CullPass`] output via
+/// `multi_draw_indexed_indirect_count`. The per-instance draw record
+/// (model transform + material_index + instance_id + flags) is
+/// fetched in the vertex shader via `@builtin(instance_index)` →
+/// `instances[iid]` SSBO lookup (Phase 5.5 A.2d.b replaced the
+/// pre-A.2d `var<immediate> push` path).
 #[derive(Debug)]
 pub struct GBufferPass {
     /// Cull-pass output (indirect-draw arg buffer).
     pub indirect_draws: ResourceId,
+    /// Cull-pass output (atomic `u32` survivor count). Phase 5.5
+    /// A.2d.b — required by `multi_draw_indexed_indirect_count`.
+    pub draw_count: ResourceId,
     /// G-buffer attachment: albedo (RGB) + roughness (A).
     pub gbuffer_albedo_roughness: ResourceId,
     /// G-buffer attachment: normal (RG) + metallic (B) + AO (A).
@@ -715,26 +816,45 @@ pub struct GBufferPass {
     pub depth: ResourceId,
     /// Per-frame UBO (`@group(0) @binding(0)`).
     pub frame_uniforms: ResourceId,
+    /// Per-instance SSBO indexed by `@builtin(instance_index)`
+    /// (`shaders/gbuffer.wgsl` `@group(1) @binding(0)`). Shared with
+    /// the CullPass's `render_queue` in v0.3 — both consumers index
+    /// the same instance table via `instance_id`.
+    pub instances: ResourceId,
+    /// Mesh vertex buffer (interleaved EMSH layout per
+    /// [`MESH_VERTEX_ATTRIBUTES`]).
+    pub vertex_buffer: ResourceId,
+    /// Mesh index buffer (u32, EMSH index format).
+    pub index_buffer: ResourceId,
     pipeline: Option<RenderPipeline>,
 }
 
 impl GBufferPass {
     /// Construct with the resource handles the graph builder produced.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         indirect_draws: ResourceId,
+        draw_count: ResourceId,
         gbuffer_albedo_roughness: ResourceId,
         gbuffer_normal_metallic: ResourceId,
         gbuffer_motion_depth: ResourceId,
         depth: ResourceId,
         frame_uniforms: ResourceId,
+        instances: ResourceId,
+        vertex_buffer: ResourceId,
+        index_buffer: ResourceId,
     ) -> Self {
         Self {
             indirect_draws,
+            draw_count,
             gbuffer_albedo_roughness,
             gbuffer_normal_metallic,
             gbuffer_motion_depth,
             depth,
             frame_uniforms,
+            instances,
+            vertex_buffer,
+            index_buffer,
             pipeline: None,
         }
     }
@@ -763,11 +883,14 @@ impl Pass for GBufferPass {
     fn record(&mut self, ctx: &mut PassContext) {
         // ADR-075 §1 — six-step template, MRT + depth render pass.
         //
-        // Opens the 3-MRT + depth render pass against the G-buffer
-        // attachments, clears them, sets the pipeline. Per-draw push
-        // constants + vertex/index/indirect-draw consumption land in
-        // A.2d (same pattern as CsmShadowPass — both consume the
-        // CullPass's indirect-draw buffer).
+        // A.2d.b: opens the 3-MRT + depth render pass, binds the
+        // per-frame UBO + per-instance SSBO + mesh VB/IB, and issues
+        // one `multi_draw_indexed_indirect_count` against the
+        // CullPass's outputs. The vertex shader reads the model
+        // transform / material_index from `instances[iid]` where
+        // `iid = first_instance` (CullPass writes
+        // `first_instance = entry.instance_id`; requires the
+        // `INDIRECT_FIRST_INSTANCE` feature on the device).
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
@@ -777,7 +900,10 @@ impl Pass for GBufferPass {
         let Some(resources) = ctx.resources else {
             return;
         };
-        let Some(_frame) = resources.resolve_buffer(self.frame_uniforms) else {
+        let Some(frame) = resources.resolve_buffer(self.frame_uniforms) else {
+            return;
+        };
+        let Some(instances) = resources.resolve_buffer(self.instances) else {
             return;
         };
         let Some(albedo) = resources.resolve_view(self.gbuffer_albedo_roughness) else {
@@ -792,6 +918,46 @@ impl Pass for GBufferPass {
         let Some(depth) = resources.resolve_view(self.depth) else {
             return;
         };
+        let Some(vb) = resources.resolve_buffer(self.vertex_buffer) else {
+            return;
+        };
+        let Some(ib) = resources.resolve_buffer(self.index_buffer) else {
+            return;
+        };
+        let Some(draws) = resources.resolve_buffer(self.indirect_draws) else {
+            return;
+        };
+        let Some(draw_count) = resources.resolve_buffer(self.draw_count) else {
+            return;
+        };
+
+        // Build bind groups against the auto-derived layouts:
+        // Group 0 (frame UBO), Group 1 (per-instance SSBO).
+        let layout_frame = pipeline.bind_group_layout(0);
+        let layout_instances = pipeline.bind_group_layout(1);
+        let bg_frame = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.bindgroup.0",
+                layout: &layout_frame,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(frame),
+                }],
+            },
+        );
+        let bg_instances = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.bindgroup.1",
+                layout: &layout_instances,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(instances),
+                }],
+            },
+        );
+
         let color_attachments = [
             RenderPassColorAttachment {
                 view: &albedo,
@@ -819,10 +985,25 @@ impl Pass for GBufferPass {
             }),
         });
         rpass.set_pipeline(pipeline);
-        // A.2d: per-frame UBO bind + per-draw push constants +
-        // `set_vertex_buffer` + `set_index_buffer_u32` + per-instance
-        // `draw_indexed_indirect` against the cull pass's draw-arg
-        // buffer. Until then the pass clears the MRT attachments.
+        rpass.set_bind_group(0, &bg_frame);
+        rpass.set_bind_group(1, &bg_instances);
+        rpass.set_vertex_buffer(0, vb);
+        rpass.set_index_buffer_u32(ib);
+        // Feature-gated indirect-count draw. Hosts without
+        // `MULTI_DRAW_INDIRECT_COUNT` (or `INDIRECT_FIRST_INSTANCE`,
+        // which the cull shader's non-zero `first_instance` relies on)
+        // short-circuit; the pass clears the MRT attachments and ends
+        // (A.2c equivalent behaviour).
+        let features = gpu.device.features();
+        if features.multi_draw_indirect_count && features.indirect_first_instance {
+            rpass.multi_draw_indexed_indirect_count(
+                draws,
+                0,
+                draw_count,
+                0,
+                INDIRECT_DRAW_MAX_COUNT,
+            );
+        }
     }
 }
 
@@ -1992,6 +2173,10 @@ mod tests {
         let csm_ubo = ResourceId(63);
         let frame_ubo = ResourceId(64);
         let shadow_sampler = ResourceId(65);
+        // Per-instance SSBO + mesh VB/IB (A.2d.b).
+        let vertex_buf = ResourceId(66);
+        let index_buf = ResourceId(67);
+        let instances_ssbo = ResourceId(68);
 
         g.add_pass(CullPass::new(
             queue,
@@ -2000,7 +2185,15 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
+        g.add_pass(CsmShadowPass::new(
+            casters,
+            shadow_atlas,
+            csm_ubo,
+            vertex_buf,
+            index_buf,
+            indirect,
+            draw_count_ssbo,
+        ));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -2009,7 +2202,16 @@ mod tests {
             indices_cursor_ssbo,
         ));
         g.add_pass(GBufferPass::new(
-            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+            indirect,
+            draw_count_ssbo,
+            gbuf_ar,
+            gbuf_nm,
+            gbuf_md,
+            depth,
+            frame_ubo,
+            instances_ssbo,
+            vertex_buf,
+            index_buf,
         ));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
@@ -2085,6 +2287,10 @@ mod tests {
         let csm_ubo = ResourceId(63);
         let frame_ubo = ResourceId(64);
         let shadow_sampler = ResourceId(65);
+        // Per-instance SSBO + mesh VB/IB (A.2d.b).
+        let vertex_buf = ResourceId(66);
+        let index_buf = ResourceId(67);
+        let instances_ssbo = ResourceId(68);
 
         g.add_pass(CullPass::new(
             queue,
@@ -2093,7 +2299,15 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
+        g.add_pass(CsmShadowPass::new(
+            casters,
+            shadow_atlas,
+            csm_ubo,
+            vertex_buf,
+            index_buf,
+            indirect,
+            draw_count_ssbo,
+        ));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -2102,7 +2316,16 @@ mod tests {
             indices_cursor_ssbo,
         ));
         g.add_pass(GBufferPass::new(
-            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+            indirect,
+            draw_count_ssbo,
+            gbuf_ar,
+            gbuf_nm,
+            gbuf_md,
+            depth,
+            frame_ubo,
+            instances_ssbo,
+            vertex_buf,
+            index_buf,
         ));
         g.add_pass(SsaoPass::new(depth, gbuf_nm, ssao, ssao_ubo));
         g.add_pass(IblPass::new(
@@ -2209,6 +2432,10 @@ mod tests {
         let csm_ubo = ResourceId(63);
         let frame_ubo = ResourceId(64);
         let shadow_sampler = ResourceId(65);
+        // Per-instance SSBO + mesh VB/IB (A.2d.b).
+        let vertex_buf = ResourceId(66);
+        let index_buf = ResourceId(67);
+        let instances_ssbo = ResourceId(68);
 
         g.add_pass(CullPass::new(
             queue,
@@ -2217,7 +2444,15 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
+        g.add_pass(CsmShadowPass::new(
+            casters,
+            shadow_atlas,
+            csm_ubo,
+            vertex_buf,
+            index_buf,
+            indirect,
+            draw_count_ssbo,
+        ));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -2226,7 +2461,16 @@ mod tests {
             indices_cursor_ssbo,
         ));
         g.add_pass(GBufferPass::new(
-            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+            indirect,
+            draw_count_ssbo,
+            gbuf_ar,
+            gbuf_nm,
+            gbuf_md,
+            depth,
+            frame_ubo,
+            instances_ssbo,
+            vertex_buf,
+            index_buf,
         ));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,

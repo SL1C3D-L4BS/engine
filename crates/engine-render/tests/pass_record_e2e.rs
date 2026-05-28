@@ -18,8 +18,8 @@ use engine_gpu::{
     Texture, TextureDesc, TextureDimension, TextureFormat, TextureUsage,
 };
 use engine_render::{
-    BloomPass, CullPass, GpuFrameContext, LightingAccumulationPass, RenderGraph, ResourceId,
-    ResourceResolver, TransientResourceTable, contracts,
+    BloomPass, CsmShadowPass, CullPass, GBufferPass, GpuFrameContext, LightingAccumulationPass,
+    RenderGraph, ResourceId, ResourceResolver, TransientResourceTable, contracts,
 };
 
 fn try_device() -> Option<Device> {
@@ -408,6 +408,297 @@ fn bloom_pass_executes_via_resolver() {
 
     let mut user: () = ();
     let mut encoder = CommandEncoder::new(&device, "smoke.bloom.encoder");
+    let gpu = GpuFrameContext {
+        device: &device,
+        encoder: &mut encoder,
+    };
+    graph
+        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .expect("execute completes");
+    let _token = queue.submit(encoder);
+}
+
+/// Helper: build the indirect-draw buffer pair sized for
+/// `engine_render::INDIRECT_DRAW_MAX_COUNT` entries. wgpu's validation
+/// for `multi_draw_indexed_indirect_count` requires the indirect
+/// buffer to be large enough to hold `max_count` records (it bounds
+/// the worst-case read range against the buffer size — the GPU's
+/// actual count comes from the count-buffer atomic, but the host-side
+/// validator checks the upper bound).
+fn build_indirect_pair(device: &Device, queue: &engine_gpu::Queue) -> (Buffer, Buffer) {
+    // `DrawIndexedIndirect`: 5 × u32 = 20B per entry × MAX_COUNT.
+    let draws_size = 20u64 * engine_render::INDIRECT_DRAW_MAX_COUNT as u64;
+    let draws = Buffer::new(
+        device,
+        &BufferDesc {
+            label: "smoke.draws",
+            size: draws_size,
+            usage: BufferUsage::STORAGE | BufferUsage::INDIRECT | BufferUsage::COPY_DST,
+        },
+    );
+    let draw_count = Buffer::new(
+        device,
+        &BufferDesc {
+            label: "smoke.draw_count",
+            size: 16,
+            usage: BufferUsage::STORAGE | BufferUsage::INDIRECT | BufferUsage::COPY_DST,
+        },
+    );
+    // Seed one draw command + count=1. index_count = 3 (a single
+    // triangle), instance_count = 1, first_index = 0,
+    // base_vertex = 0, first_instance = 0 (instance_id slot 0).
+    // Layout per `DrawIndexedIndirect` in wgpu / Vulkan:
+    // [index_count, instance_count, first_index, base_vertex, first_instance].
+    // wgpu guarantees little-endian on all supported targets;
+    // `to_le_bytes` keeps the test allocator-free without a bytemuck
+    // dev-dep on engine-render.
+    let mut args_bytes = [0u8; 20];
+    for (slot, value) in [3u32, 1, 0, 0, 0].iter().enumerate() {
+        args_bytes[slot * 4..(slot + 1) * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    queue.write_buffer(&draws, 0, &args_bytes);
+    let count_bytes = 1u32.to_le_bytes();
+    queue.write_buffer(&draw_count, 0, &count_bytes);
+    (draws, draw_count)
+}
+
+/// CsmShadowPass executes the depth-only render pass with one
+/// `multi_draw_indexed_indirect_count` indirect-draw call against a
+/// real device (Phase 5.5 A.2d.b). Allocates the shadow atlas + CSM
+/// UBO + per-instance SSBO + a 3-vertex mesh VB/IB + the indirect-draw
+/// pair seeded with a single draw command.
+///
+/// On hosts without `MULTI_DRAW_INDIRECT_COUNT` (or
+/// `INDIRECT_FIRST_INSTANCE`), the record() body short-circuits before
+/// the indirect call — the test still proves the bind-group + VB/IB +
+/// attachment-view path completes the encoder submission cleanly,
+/// matching the A.2c clear-only behaviour.
+#[test]
+fn csm_shadow_pass_executes_via_resolver() {
+    let Some(device) = try_device() else {
+        return;
+    };
+    let queue = device.queue();
+    let mut pool = TransientResourceTable::new();
+
+    // Shadow atlas (depth attachment). 256² keeps the test fast.
+    pool.register_texture(
+        ResourceId(10),
+        Texture::new(
+            &device,
+            &TextureDesc {
+                label: "smoke.shadow.atlas",
+                extent: Extent3d::new_2d(256, 256),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: contracts::DEPTH_BUFFER_FORMAT,
+                usage: TextureUsage::RENDER_ATTACHMENT | TextureUsage::TEXTURE_BINDING,
+            },
+        ),
+    );
+
+    // CSM UBO — `csm_shadow.wgsl` `CsmUniforms` is 4 mat4x4 (256B) +
+    // 4 floats split-far + 3 floats bias/filter = 288B by WGSL
+    // struct-alignment rules. wgpu's bind-group validator rejects an
+    // undersized buffer; use 384B for the 16B-aligned safety pad.
+    pool.register_buffer(
+        ResourceId(20),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.csm.ubo",
+                size: 384,
+                usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+
+    // Per-instance SSBO (the cull-pass output the shader reads via
+    // `@builtin(instance_index)`). One 48B entry per
+    // `contracts::PushConstants`-equivalent record.
+    pool.register_buffer(
+        ResourceId(21),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.shadow.instances",
+                size: 256, // > sizeof(InstanceDraw) × MAX_INSTANCES
+                usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+
+    // Mesh VB: one triangle's worth of 48B EMSH vertices = 144B.
+    pool.register_buffer(
+        ResourceId(22),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.shadow.vb",
+                size: 256,
+                usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+    // Mesh IB: 3 × u32 = 12B (one triangle).
+    pool.register_buffer(
+        ResourceId(23),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.shadow.ib",
+                size: 32,
+                usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+
+    // Indirect pair (seeded via build_indirect_pair).
+    let (draws, draw_count) = build_indirect_pair(&device, &queue);
+    pool.register_buffer(ResourceId(24), draws);
+    pool.register_buffer(ResourceId(25), draw_count);
+
+    let resolver: &dyn ResourceResolver = &pool;
+
+    let mut graph = RenderGraph::new();
+    graph.add_pass(CsmShadowPass::new(
+        ResourceId(21), // shadow_casters (instances SSBO)
+        ResourceId(10), // shadow_atlas
+        ResourceId(20), // csm_uniforms
+        ResourceId(22), // vertex_buffer
+        ResourceId(23), // index_buffer
+        ResourceId(24), // indirect_draws
+        ResourceId(25), // draw_count
+    ));
+    graph
+        .install_pipelines(&device)
+        .expect("CsmShadowPass pipeline installs");
+    graph.compile().expect("graph compiles");
+
+    let mut user: () = ();
+    let mut encoder = CommandEncoder::new(&device, "smoke.shadow.encoder");
+    let gpu = GpuFrameContext {
+        device: &device,
+        encoder: &mut encoder,
+    };
+    graph
+        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .expect("execute completes");
+    let _token = queue.submit(encoder);
+}
+
+/// GBufferPass executes the 3-MRT + depth render pass with one
+/// `multi_draw_indexed_indirect_count` indirect-draw call (Phase 5.5
+/// A.2d.b). Allocates the 3 G-buffer attachments + depth + frame UBO +
+/// per-instance SSBO + a 3-vertex mesh VB/IB + the indirect-draw pair.
+#[test]
+fn gbuffer_pass_executes_via_resolver() {
+    let Some(device) = try_device() else {
+        return;
+    };
+    let queue = device.queue();
+    let mut pool = TransientResourceTable::new();
+
+    pool.register_texture(
+        ResourceId(10),
+        tiny_color(
+            &device,
+            "smoke.gbuf_ar",
+            contracts::GBUFFER_ALBEDO_ROUGHNESS_FORMAT,
+        ),
+    );
+    pool.register_texture(
+        ResourceId(11),
+        tiny_color(
+            &device,
+            "smoke.gbuf_nm",
+            contracts::GBUFFER_NORMAL_METALLIC_FORMAT,
+        ),
+    );
+    pool.register_texture(
+        ResourceId(12),
+        tiny_color(
+            &device,
+            "smoke.gbuf_md",
+            contracts::GBUFFER_MOTION_DEPTH_FORMAT,
+        ),
+    );
+    pool.register_texture(ResourceId(13), tiny_depth(&device, "smoke.gbuf.depth"));
+
+    // Frame UBO. `gbuffer.wgsl` `PerFrame` is 3 mat4x4 + 2 vec4 = 224B.
+    // Round to 256B for safety.
+    pool.register_buffer(
+        ResourceId(20),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.gbuf.frame_ubo",
+                size: 256,
+                usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+    pool.register_buffer(
+        ResourceId(21),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.gbuf.instances",
+                size: 256,
+                usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+    pool.register_buffer(
+        ResourceId(22),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.gbuf.vb",
+                size: 256,
+                usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+    pool.register_buffer(
+        ResourceId(23),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.gbuf.ib",
+                size: 32,
+                usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+
+    let (draws, draw_count) = build_indirect_pair(&device, &queue);
+    pool.register_buffer(ResourceId(24), draws);
+    pool.register_buffer(ResourceId(25), draw_count);
+
+    let resolver: &dyn ResourceResolver = &pool;
+
+    let mut graph = RenderGraph::new();
+    graph.add_pass(GBufferPass::new(
+        ResourceId(24), // indirect_draws
+        ResourceId(25), // draw_count
+        ResourceId(10), // gbuffer_albedo_roughness
+        ResourceId(11), // gbuffer_normal_metallic
+        ResourceId(12), // gbuffer_motion_depth
+        ResourceId(13), // depth
+        ResourceId(20), // frame_uniforms
+        ResourceId(21), // instances
+        ResourceId(22), // vertex_buffer
+        ResourceId(23), // index_buffer
+    ));
+    graph
+        .install_pipelines(&device)
+        .expect("GBufferPass pipeline installs");
+    graph.compile().expect("graph compiles");
+
+    let mut user: () = ();
+    let mut encoder = CommandEncoder::new(&device, "smoke.gbuf.encoder");
     let gpu = GpuFrameContext {
         device: &device,
         encoder: &mut encoder,
