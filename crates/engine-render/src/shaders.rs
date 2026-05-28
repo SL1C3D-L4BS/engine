@@ -53,6 +53,15 @@ pub const BLOOM_WGSL: &str = include_str!("../shaders/bloom.wgsl");
 /// TonemapPass ACES filmic.
 pub const TONEMAP_WGSL: &str = include_str!("../shaders/tonemap.wgsl");
 
+/// UpscalePass owned-bilinear GPU dispatch (Phase 6 PR 1a, ADR-083 §4).
+/// `textureSampleLevel` against a linear sampler at the 2× output res.
+pub const BILINEAR_UPSCALE_WGSL: &str = include_str!("../shaders/bilinear_upscale.wgsl");
+
+/// UpscalePass FSR-EASU edge-adaptive spatial upsampler (Phase 6 PR 1a,
+/// ADR-076 + ADR-083 §3). Polaris-compatible WGSL port of GPUOpen
+/// FidelityFX FSR 1.0 (Lottes 2021, MIT licensed).
+pub const FSR_EASU_WGSL: &str = include_str!("../shaders/fsr_easu.wgsl");
+
 /// SplatSort radix-by-depth compute kernel (Phase 6 PR 2, ADR-077 §3).
 /// Three entry points: `cs_init` projects positions to camera-space
 /// depth keys; `cs_count` accumulates the per-pass 8-bit digit bins
@@ -183,6 +192,51 @@ mod tests {
         assert_contains(BLOOM_WGSL, "fn cs_extract", "bloom.wgsl");
         assert_contains(BLOOM_WGSL, "fn cs_downsample", "bloom.wgsl");
         assert_contains(BLOOM_WGSL, "fn cs_upsample", "bloom.wgsl");
+    }
+
+    #[test]
+    fn bilinear_upscale_shader_has_cs_main() {
+        assert_contains(BILINEAR_UPSCALE_WGSL, "@compute", "bilinear_upscale.wgsl");
+        assert_contains(
+            BILINEAR_UPSCALE_WGSL,
+            "@workgroup_size(8, 8, 1)",
+            "bilinear_upscale.wgsl",
+        );
+        assert_contains(BILINEAR_UPSCALE_WGSL, "fn cs_main", "bilinear_upscale.wgsl");
+        assert_contains(
+            BILINEAR_UPSCALE_WGSL,
+            "textureSampleLevel",
+            "bilinear_upscale.wgsl",
+        );
+    }
+
+    #[test]
+    fn fsr_easu_shader_is_polaris_compatible() {
+        // ADR-076 + ADR-083: Polaris GFX8 compatibility — no subgroup
+        // intrinsics, no f16. EASU runs on every device the engine
+        // targets. The check scans for actual intrinsic call sites
+        // rather than the literal word so documentation comments can
+        // describe the constraint.
+        assert_contains(FSR_EASU_WGSL, "@compute", "fsr_easu.wgsl");
+        assert_contains(FSR_EASU_WGSL, "@workgroup_size(8, 8, 1)", "fsr_easu.wgsl");
+        assert_contains(FSR_EASU_WGSL, "fn cs_main", "fsr_easu.wgsl");
+        assert_contains(FSR_EASU_WGSL, "luma_rec709", "fsr_easu.wgsl");
+        assert_contains(FSR_EASU_WGSL, "easu_set", "fsr_easu.wgsl");
+        assert!(
+            !FSR_EASU_WGSL.contains("subgroupShuffle")
+                && !FSR_EASU_WGSL.contains("subgroupBallot")
+                && !FSR_EASU_WGSL.contains("subgroupBroadcast"),
+            "fsr_easu.wgsl: Polaris-compatibility requires no subgroup intrinsics"
+        );
+        // The `f16` half-precision type does not appear (it would
+        // require the `f16` WGSL extension which Polaris lacks).
+        assert!(
+            !FSR_EASU_WGSL.contains(": f16")
+                && !FSR_EASU_WGSL.contains("vec2<f16>")
+                && !FSR_EASU_WGSL.contains("vec3<f16>")
+                && !FSR_EASU_WGSL.contains("vec4<f16>"),
+            "fsr_easu.wgsl: Polaris-compatibility requires pure f32"
+        );
     }
 
     #[test]

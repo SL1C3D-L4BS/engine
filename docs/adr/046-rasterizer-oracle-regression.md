@@ -152,6 +152,58 @@ yet a failure) so review forces revisiting.
 Exceptions can be added by a code-review-approved PR. No
 "silent override" — every accepted divergence is publicly logged.
 
+### 6a. Amendment (2026-05-28, ADR-081) — exception categories
+
+The register's free-text *Reason* column proved noisy: real
+driver-level f32 drift, engineering debt (incomplete shader bodies),
+and *architectural design-intent split* (CPU oracle vs. GPU
+production pathway diverging by construction) all landed under the
+same heading in Phase 5.5's closure. ADR-081 formalises a four-way
+category scheme that the register's *Category* column records:
+
+1. **`engine-fix`** — the engine code is incomplete or has a bug.
+   The exception is *engineering debt*; the entry's *Sunset* row is
+   populated by the PR that lands the fix.
+2. **`cpu-oracle-stale`** — the CPU oracle's reference math has
+   drifted from the GPU's intended numerical behaviour. The
+   correction lands in the relevant `engine-raster` module; the
+   exception sunsets with the matching PR.
+3. **`vendor-driver`** — a specific GPU driver / vendor SDK
+   introduces a known divergence the engine accepts (per the
+   original §6 above). Sunset is set when the driver fix lands.
+4. **`architectural`** — the CPU oracle and the GPU path do
+   *fundamentally different work* — different number of passes,
+   different intermediate resolutions, different kernel shapes —
+   because the two design intents differ. The CPU oracle is the
+   *reference* implementation (single-pass, full-resolution,
+   scalar f32) targeted at numerical clarity for tests and
+   debugging; the GPU path is the *production* implementation
+   (multi-pass, mip-pyramid, hardware-accelerated) targeted at
+   real-time performance. The fixture verifies the *wiring*
+   (every pass executes; the chain produces a non-trivial output)
+   rather than per-pixel parity. Bound: SSIM ≥ 0.85 minimum;
+   fixture-specific lower bound documented per-fixture.
+   `architectural` exceptions are *permanent* and never sunset
+   unless one of the two paths is redesigned to match the other.
+
+The *Decision* workflow under §6 gains an *Architectural* branch:
+
+> - **Architectural divergence** → add an entry under category
+>   *architectural*; document the design intent split (which
+>   path is reference, which is production); the entry is
+>   permanent and never sunsets unless one of the two paths is
+>   redesigned to match the other.
+
+The `docs/audit/oracle-exceptions.md` register grows a *Category*
+column (forward-compatible; older readers ignore it; current
+readers gain category info per §6a above). ADR-077's 3DGS
+fixtures land under category `architectural` from the moment they
+ship, because back-to-front alpha blending of 10⁶ values has
+inherent f32-precision drift that exceeds 1/255 by construction
+(the CPU oracle and GPU shader use the same math, but operation
+reorder in the GPU's hardware blend unit produces last-byte
+divergence).
+
 ### 7. CLI surface (spec Part IX, lines 726–732, expanded)
 
 ```

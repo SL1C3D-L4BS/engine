@@ -201,7 +201,17 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
             continue;
         }
         let l = normalize(to_light);
-        let attenuation = select(1.0, 1.0 / max(dist_sq, 1.0), r > 0.0);
+        // Point-light attenuation matches the CPU oracle
+        // `engine_raster::shading::light_dir_and_attenuation`: a
+        // windowed inverse-square with an end-of-range cutoff:
+        //   t  = clamp(1 - dist/range, 0, 1)
+        //   att = (t·t) / dist²
+        // ADR-043 + ADR-081 §1: aligns lighting.wgsl with the
+        // attenuation kernel the rasterizer reference uses. Closes
+        // the `cluster_64_lights` post-v0.3 exception to strict 1/255.
+        let dist_p = sqrt(max(dist_sq, 1e-12));
+        let t_win = select(0.0, clamp(1.0 - dist_p / r, 0.0, 1.0), r > 0.0);
+        let attenuation = select(1.0, (t_win * t_win) / max(dist_sq, 1e-6), r > 0.0);
         color = color + cook_torrance(
             base_color, metallic, roughness, n, v, l,
             light.color_intensity.rgb, light.color_intensity.a * attenuation,
