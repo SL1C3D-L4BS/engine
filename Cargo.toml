@@ -71,7 +71,14 @@ blake3 = { version = "1", default-features = false }
 # version at Phase 5 PR 2 land time" clause (ADR text quoted 0.20 from
 # May 2026; ecosystem moved on). Major-version bumps require an ADR
 # amendment.
-wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+#
+# Backend features (ADR-074): `vulkan` is the only viable Linux backend
+# for the spec's Recommended-tier hardware (RX 580 / Polaris 10 / GFX8
+# via Mesa RADV — spec Part XX.7 line 1587). The `ash` Vulkan binding
+# loads libvulkan.so.1 at runtime, so enabling the feature does not
+# require the Vulkan SDK at build time and is safe on hosts without a
+# Vulkan loader (wgpu instance creation falls back gracefully).
+wgpu = { version = "29", default-features = false, features = ["wgsl", "vulkan"] }
 
 # raw-window-handle 0.6 — only `engine-gpu::swapchain` touches it,
 # routed through wgpu's `SurfaceTarget`. Owned-discipline boundary:

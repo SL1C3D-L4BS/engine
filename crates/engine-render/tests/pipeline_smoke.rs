@@ -1,25 +1,23 @@
-//! Phase 6 PR 7 / PR 7.5 — GPU pipeline smoke test.
+//! Phase 5.5 GPU smoke tests.
 //!
-//! Construct a real-GPU [`engine_gpu::Device`] and run every embedded
-//! WGSL shader through [`build_all_phase6_pipelines`]. If wgpu rejects
-//! any pipeline assembly (shader-validation error, bind-group-layout
-//! mismatch, missing feature), the test fails loudly and the labelled
-//! `ShaderError` names the failing pass — the PR-8 cue to populate that
-//! pass's real bind-group / vertex-layout / push-constant descriptors.
+//! Two layered smokes:
 //!
-//! Marked `#[ignore]` so the default `cargo test --workspace` stays
-//! green on environments that lack a GPU adapter (CI workers without
-//! Vulkan / Metal / DX12 backends). The workspace pins
-//! `wgpu = { default-features = false, features = ["wgsl"] }`, so
-//! actually exercising pipeline construction needs a backend feature
-//! propagated through — see the PR-7 addendum on ADR-068 for the
-//! `[patch.crates-io]` block + `wgpu` feature toggles used on the
-//! self-hosted RX 6700 XT runner (ADR-047 §2). Without that, the
-//! test skips with the "no backend enabled" log line below rather
-//! than failing.
+//! 1. [`device_init_against_real_adapter`] — ADR-074 contract. Proves
+//!    that [`engine_gpu::Device::new`] reaches a real adapter via the
+//!    wgpu Vulkan backend the workspace `Cargo.toml` now enables.
+//!    Runs in the default `cargo test --workspace`; skips gracefully
+//!    on hosts without a Vulkan loader.
+//! 2. [`build_all_phase6_pipelines_against_real_device`] — ADR-075
+//!    contract. Constructs every Track-A WGSL pipeline against the
+//!    real device and validates the WGSL `@group/@binding` declarations
+//!    against the Rust-authored bind-group layouts. Currently
+//!    `#[ignore]`'d because the bind-group layouts are A.2 deliverables;
+//!    the test correctly fails today with "binding missing from
+//!    pipeline layout" until A.2 wires them.
 //!
 //! ```text
-//! cargo test -p engine-render --test pipeline_smoke -- --ignored
+//! cargo test -p engine-render --test pipeline_smoke                            # ADR-074 contract
+//! cargo test -p engine-render --test pipeline_smoke -- --include-ignored       # both, after A.2 lands
 //! ```
 
 use std::panic::{self, AssertUnwindSafe};
@@ -63,8 +61,35 @@ fn try_device() -> Option<Device> {
     }
 }
 
+/// ADR-074 contract: prove wgpu reaches a real adapter through the
+/// workspace's `wgpu/vulkan` feature. This is the thinnest possible
+/// smoke — it does not depend on the A.2 bind-group authoring work and
+/// can run in the default workspace test pass.
 #[test]
-#[ignore = "requires a wgpu-compatible adapter; run with --ignored"]
+fn device_init_against_real_adapter() {
+    let Some(device) = try_device() else {
+        return;
+    };
+    // Touch the limits + features so the device handle isn't a dead
+    // value (and so a future regression in `Device::new`'s feature
+    // negotiation surfaces here, not silently downstream).
+    let features = device.features();
+    let limits = device.limits();
+    eprintln!(
+        "[pipeline_smoke] device reached: limits={limits:?} \
+         features={{push_constants:{}, bc_textures:{}, descriptor_indexing:{}}}",
+        features.push_constants, features.bc_textures, features.descriptor_indexing,
+    );
+    drop(device);
+}
+
+/// ADR-075 contract: construct every Track-A WGSL pipeline. The Rust
+/// bind-group layouts must match the WGSL `@group/@binding`
+/// declarations. Marked `#[ignore]` until A.2 authors the per-pass
+/// bind-group layouts (currently the pipelines build with empty
+/// layouts; wgpu correctly rejects the first shader binding).
+#[test]
+#[ignore = "A.2 wires per-pass bind-group layouts; remove when A.2 lands"]
 fn build_all_phase6_pipelines_against_real_device() {
     let Some(device) = try_device() else {
         return;

@@ -170,10 +170,28 @@ impl Device {
             required_features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
         }
 
+        // wgpu's `Limits::downlevel_defaults()` (Tier1Minimum) sets
+        // `max_immediate_size = 0` even when the IMMEDIATES feature
+        // is requested. The two are independent dials in wgpu's model:
+        // the feature flag enables the API surface; the limit caps the
+        // size. ADR-044 §6 uses 8 bytes; Vulkan's guaranteed-minimum
+        // push-constant size is 128 bytes (every Polaris/RADV /
+        // Skylake-GT / Apple Silicon device meets this). Raise the
+        // limit to 128 when the feature is on so the engine's existing
+        // pipelines (8-byte push for the texture_id + sampler_id pair)
+        // construct cleanly. (wgpu 29 renamed `PUSH_CONSTANTS` →
+        // `IMMEDIATES` and `max_push_constant_size` → `max_immediate_size`;
+        // the engine keeps the legacy `push_constants` field name for
+        // ADR-stability per ADR-044.) ADR-074 §3.
+        let mut required_limits = limits.wgpu_limits();
+        if features.push_constants {
+            required_limits.max_immediate_size = 128;
+        }
+
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("engine-gpu device"),
             required_features,
-            required_limits: limits.wgpu_limits(),
+            required_limits,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
