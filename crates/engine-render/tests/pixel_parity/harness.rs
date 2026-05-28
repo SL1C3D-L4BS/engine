@@ -45,9 +45,9 @@
 use std::panic::{self, AssertUnwindSafe};
 
 use engine_gpu::{
-    Buffer, BufferDesc, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder, Device,
-    DeviceLimits, Extent3d, Sampler, SamplerDesc, Texture, TextureDesc, TextureDimension,
-    TextureFormat, TextureUsage,
+    Buffer, BufferDesc, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder, ComputePipeline,
+    Device, DeviceLimits, Extent3d, Queue, Sampler, SamplerDesc, Texture, TextureDesc,
+    TextureDimension, TextureFormat, TextureUsage,
 };
 use engine_raster::{Framebuffer, Rgba8};
 use engine_render::{
@@ -167,11 +167,16 @@ pub fn try_device() -> Option<Device> {
 // =============================================================================
 
 /// One-time-cost owned state shared across all parity fixtures.
+///
+/// Phase 6 PR 1c (ADR-041 + ADR-081 §2) — the BRDF LUT now lives in
+/// the pool that owns it, baked fresh per pool via
+/// [`bake_brdf_lut`] using the harness's cached compute pipeline.
+/// This closes the `ibl_probe` oracle exception by replacing the
+/// previous placeholder zero-LUT with the real Karis split-sum
+/// integral that the CPU oracle's IBL specular term assumes.
 pub struct ParityHarness {
     pub device: Device,
     pub pipelines: Phase6Pipelines,
-    /// Pre-baked 512² Rg16Float BRDF LUT (init.rs:155).
-    pub brdf_lut: Texture,
 }
 
 impl ParityHarness {
@@ -179,7 +184,6 @@ impl ParityHarness {
     /// no compatible device / loader (CI runners without wgpu vulkan).
     pub fn try_new() -> Option<Self> {
         let device = try_device()?;
-        let queue = device.queue();
         let pipelines = match build_all_phase6_pipelines(&device) {
             Ok(p) => p,
             Err((name, e)) => {
@@ -187,19 +191,20 @@ impl ParityHarness {
                 return None;
             }
         };
-        let brdf_lut = bake_brdf_lut(&device, &queue, &pipelines.brdf_lut_bake);
-        Some(Self {
-            device,
-            pipelines,
-            brdf_lut,
-        })
+        Some(Self { device, pipelines })
     }
 
     /// Allocate the canonical 10-pass transient resource pool at the
     /// given render extent. Textures + buffers + samplers populate
     /// every ResourceId every pass might look up.
     pub fn allocate_pool(&self, width: u32, height: u32) -> Pool {
-        Pool::new(&self.device, &self.brdf_lut, width, height)
+        Pool::new(
+            &self.device,
+            &self.device.queue(),
+            &self.pipelines.brdf_lut_bake,
+            width,
+            height,
+        )
     }
 
     /// Build the canonical 10-pass graph against the harness's resource
@@ -363,7 +368,13 @@ pub struct Pool {
 }
 
 impl Pool {
-    fn new(device: &Device, brdf_lut: &Texture, width: u32, height: u32) -> Self {
+    fn new(
+        device: &Device,
+        queue: &Queue,
+        brdf_bake_pipeline: &ComputePipeline,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let mut table = TransientResourceTable::new();
 
         // ---- G-buffer + depth ----
@@ -415,22 +426,15 @@ impl Pool {
         table.register_texture(RID_BLOOM, bloom);
         table.register_texture(RID_TONEMAPPED, tonemapped);
 
-        // Clone the BRDF LUT so the table owns it under the canonical id.
-        // The harness retains the original; both `Texture` handles refer
-        // to the same wgpu resource because the underlying `Texture`
-        // type wraps a refcounted handle in wgpu 29 (cheap clone).
-        // *Actually* `Texture` doesn't impl Clone in engine-gpu; we
-        // re-bake a 1×1 placeholder for now (resolvers borrow it; the
-        // tests passing the LUT through the BRDF binding will need
-        // either a Clone impl on Texture, or moving the harness's
-        // brdf_lut into the table directly).
-        //
-        // For Slice 2A the IBL pass short-circuits on missing probe
-        // contents anyway. Register a placeholder so resolver lookup
-        // doesn't fail; visual parity for IBL is a later slice.
-        let brdf_placeholder = brdf_placeholder_texture(device);
-        let _ = brdf_lut; // suppress unused — see comment above.
-        table.register_texture(RID_BRDF_LUT, brdf_placeholder);
+        // BRDF LUT — bake the Karis split-sum integral fresh per pool
+        // using the harness's cached compute pipeline. ADR-041 + ADR-081
+        // §2: closes the `ibl_probe` oracle exception by replacing the
+        // pre-Slice-2A placeholder zero-LUT with the real
+        // 512² Rg16Float integrator output the IBL pass samples for
+        // its specular term. Cost: single-digit ms per pool per
+        // ADR-065 §3; well inside per-test budget.
+        let brdf_lut = bake_brdf_lut(device, queue, brdf_bake_pipeline);
+        table.register_texture(RID_BRDF_LUT, brdf_lut);
 
         // ---- buffers ----
         // CullPass inputs/outputs.
@@ -690,21 +694,6 @@ fn tonemap_target(device: &Device, label: &'static str, width: u32, height: u32)
             usage: TextureUsage::TEXTURE_BINDING
                 | TextureUsage::STORAGE_BINDING
                 | TextureUsage::COPY_SRC,
-        },
-    )
-}
-
-fn brdf_placeholder_texture(device: &Device) -> Texture {
-    Texture::new(
-        device,
-        &TextureDesc {
-            label: "parity.brdf_lut.placeholder",
-            extent: Extent3d::new_2d(contracts::BRDF_LUT_DIM, contracts::BRDF_LUT_DIM),
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rg16Float,
-            usage: TextureUsage::TEXTURE_BINDING | TextureUsage::STORAGE_BINDING,
         },
     )
 }
