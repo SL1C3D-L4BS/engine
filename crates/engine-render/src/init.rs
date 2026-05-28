@@ -2,25 +2,32 @@
 //! not per frame, and therefore lives outside the [`crate::render_graph`].
 //!
 //! Today the only resident is the BRDF LUT bake (ADR-065 §3). The
-//! Karis split-sum BRDF is precomputed into a 512² Rgba16Float
+//! Karis split-sum BRDF is precomputed into a 512² Rg16Float
 //! texture and sampled by [`crate::passes::IblPass`] every frame.
 //! Because the bake is deterministic, scene-invariant, and runs
 //! exactly once per device session, modelling it as a [`Pass`] would
 //! waste a graph slot every frame. Instead the renderer calls
-//! [`build_brdf_lut_bake_pipeline`] at startup, dispatches once via
-//! its own command encoder, and stores the resulting texture in the
+//! [`bake_brdf_lut`] at startup, dispatches once via its own command
+//! encoder, and stores the resulting texture in the
 //! [`crate::resources::BrdfLut`] resource slot.
 //!
-//! PR 7 ships the pipeline-construction surface so the WGSL shader
-//! compiles green against a real `engine_gpu::Device`. PR 8 wires
-//! the bind-group descriptor + storage-texture output + dispatch +
-//! queue submission that actually populates the texture.
+//! Phase 5.5 A.2b-ii lifts [`bake_brdf_lut`] from the
+//! "build the pipeline" surface of A.2a (still available via
+//! [`build_brdf_lut_bake_pipeline`]) to the "dispatch + return the
+//! cached texture" one-shot the renderer can call without authoring
+//! a transient pool entry. ADR-075 §1 names this helper as the
+//! `bake` step that runs before the per-frame graph loop.
 //!
 //! [`Pass`]: crate::render_graph::Pass
 
-use engine_gpu::{ComputePipeline, Device, RenderPipeline};
+use engine_gpu::{
+    BindGroup, BindGroupDesc, BindGroupEntry, BindingResource, CommandEncoder, ComputePipeline,
+    Device, Extent3d, Queue, RenderPipeline, Texture, TextureDesc, TextureDimension, TextureFormat,
+    TextureUsage,
+};
 use engine_shader::Stage;
 
+use crate::contracts::BRDF_LUT_DIM;
 use crate::passes;
 use crate::shader::{
     ComputePipelineHelperDesc, ShaderError, build_compute_pipeline, wgsl_artefact_set,
@@ -115,4 +122,79 @@ pub fn build_all_phase6_pipelines(
         brdf_lut_bake: build_brdf_lut_bake_pipeline(device)
             .map_err(|e| ("init.brdf_lut_bake", e))?,
     })
+}
+
+/// One-shot BRDF LUT bake — runs the BRDF LUT bake compute shader
+/// once against `device` / `queue` and returns the populated
+/// [`Texture`]. The renderer caches this texture in the
+/// [`crate::resources::BrdfLut`] resource slot for the lifetime of
+/// the device session; [`crate::passes::IblPass`] samples it every
+/// frame.
+///
+/// Output format: [`TextureFormat::Rg16Float`] at
+/// [`crate::contracts::BRDF_LUT_DIM`]² (512² per ADR-065 §3). The
+/// format matches the WGSL `texture_storage_2d<rg16float, write>`
+/// declaration in `shaders/brdf_lut_bake.wgsl` exactly — wgpu
+/// validates the bind-group entry's texture format against the
+/// shader's storage-format declaration at bind-group creation time,
+/// and the engine consequently requires Rg16Float storage write
+/// support (advertised via the
+/// [`engine_gpu::DeviceFeatures::adapter_specific_format_features`]
+/// feature that the A.2a Polaris bring-up activated).
+///
+/// The bake shader runs ~1024 GGX importance samples per LUT pixel;
+/// total wall-clock on the developer's RX 580 is single-digit
+/// milliseconds — amortised across the entire device session, so the
+/// cost is invisible to the per-frame budget.
+///
+/// `pipeline` is the compute pipeline returned by
+/// [`build_brdf_lut_bake_pipeline`]. Splitting the helper into
+/// pipeline-build + bake-dispatch keeps the device-lifetime pipeline
+/// owned by the caller (or by [`Phase6Pipelines`]) while letting
+/// startup code call this without re-compiling the shader each run.
+pub fn bake_brdf_lut(device: &Device, queue: &Queue, pipeline: &ComputePipeline) -> Texture {
+    let texture = Texture::new(
+        device,
+        &TextureDesc {
+            label: "init.brdf_lut",
+            extent: Extent3d::new_2d(BRDF_LUT_DIM, BRDF_LUT_DIM),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rg16Float,
+            usage: TextureUsage::STORAGE_BINDING | TextureUsage::TEXTURE_BINDING,
+        },
+    );
+
+    // The bake shader has a single binding at @group(0) @binding(0):
+    // a `texture_storage_2d<rg16float, write>` for the LUT output.
+    // Bind against the auto-derived layout — A.2a established that
+    // the WGSL declaration drives the implicit layout.
+    let layout = pipeline.bind_group_layout(0);
+    let bind_group = BindGroup::new(
+        device,
+        &BindGroupDesc {
+            label: "init.brdf_lut.bindgroup",
+            layout: &layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&texture.default_view()),
+            }],
+        },
+    );
+
+    // The shader uses workgroup size (8, 8, 1); dispatch dim is
+    // ceil(BRDF_LUT_DIM / 8) per axis.
+    let dispatch = BRDF_LUT_DIM.div_ceil(8);
+
+    let mut encoder = CommandEncoder::new(device, "init.brdf_lut.encoder");
+    {
+        let mut cpass = encoder.begin_compute_pass("init.brdf_lut.dispatch");
+        cpass.set_pipeline(pipeline);
+        cpass.set_bind_group(0, &bind_group);
+        cpass.dispatch_workgroups(dispatch, dispatch, 1);
+    }
+    let _token = queue.submit(encoder);
+
+    texture
 }

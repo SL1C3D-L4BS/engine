@@ -92,6 +92,13 @@ pub enum TextureFormat {
     Bgra8UnormSrgb,
     /// 16-bit float RGBA. HDR intermediate.
     Rgba16Float,
+    /// 16-bit float RG. Used by the BRDF LUT bake (ADR-065 §3) — the
+    /// `texture_storage_2d<rg16float, write>` storage view in
+    /// `shaders/brdf_lut_bake.wgsl` requires a matching texture
+    /// format. Polaris / Mesa RADV exposes RG16F storage writes via
+    /// the same `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` feature
+    /// that unlocked the R16F + BGRA8UNORM storage writes in A.2a.
+    Rg16Float,
     /// 32-bit float depth.
     Depth32Float,
     /// 32-bit float depth + 8-bit stencil.
@@ -123,6 +130,7 @@ impl TextureFormat {
             TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
             TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
             TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+            TextureFormat::Rg16Float => wgpu::TextureFormat::Rg16Float,
             TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
             TextureFormat::Depth32FloatStencil8 => wgpu::TextureFormat::Depth32FloatStencil8,
             TextureFormat::Depth24PlusStencil8 => wgpu::TextureFormat::Depth24PlusStencil8,
@@ -385,6 +393,7 @@ mod tests {
             TextureFormat::Rgba8Unorm,
             TextureFormat::Bgra8UnormSrgb,
             TextureFormat::Rgba16Float,
+            TextureFormat::Rg16Float,
             TextureFormat::Depth32Float,
             TextureFormat::Depth32FloatStencil8,
             TextureFormat::Depth24PlusStencil8,

@@ -33,6 +33,10 @@ use core::marker::PhantomData;
 
 use crate::shader::ShaderError;
 
+pub mod views;
+
+pub use views::{ResourceResolver, TransientResourceTable};
+
 /// Which rendering track a pass belongs to. ADR-004 names the
 /// tracks; this enum is their runtime representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +177,12 @@ pub struct PassContext<'a> {
     /// schedule. Phase-6 GPU passes short-circuit when this is `None`,
     /// matching their PR-1-era no-op record behaviour.
     pub gpu: Option<GpuFrameContext<'a>>,
+    /// Transient-resource lookup. `Some(_)` on production GPU frames
+    /// (the host renderer's [`views::TransientResourceTable`] or a
+    /// custom impl); `None` on CPU-oracle paths and on
+    /// scheduling-only unit tests. ADR-075 §5 — pass `record()`
+    /// bodies short-circuit gracefully when this is `None`.
+    pub resources: Option<&'a dyn views::ResourceResolver>,
     /// Backend-opaque scratchpad. The software rasterizer uses
     /// it for output-buffer access; the GPU backend may stash
     /// per-frame ECS/world state here.
@@ -390,15 +400,21 @@ impl RenderGraph {
     }
 
     /// Execute the compiled schedule against a backend-supplied
-    /// user context. PR 1 shipped the no-GPU surface; PR 7 adds the
+    /// user context. PR 1 shipped the no-GPU surface; PR 7 added the
     /// optional [`GpuFrameContext`] so Phase-6 passes can record
-    /// against an `engine-gpu` encoder. The rasterizer testbed passes
-    /// `None`; production frame loops pass `Some(_)`.
+    /// against an `engine-gpu` encoder. Phase 5.5 A.2b-ii adds the
+    /// optional [`ResourceResolver`] so pass bodies can resolve
+    /// graph-managed resources at execute time.
+    ///
+    /// CPU oracle drivers (the rasterizer testbed, scheduling
+    /// unit tests) pass `gpu = None, resources = None`. Production
+    /// GPU frame loops pass `Some(_)` for both.
     pub fn execute(
         &mut self,
         frame_idx: u64,
         user: &mut dyn core::any::Any,
         mut gpu: Option<GpuFrameContext<'_>>,
+        resources: Option<&dyn views::ResourceResolver>,
     ) -> Result<(), ExecuteError> {
         let Some(schedule) = self.schedule.clone() else {
             return Err(ExecuteError::NotCompiled);
@@ -415,6 +431,7 @@ impl RenderGraph {
             let mut ctx = PassContext {
                 frame_idx,
                 gpu: gpu_iter,
+                resources,
                 user: &mut *user,
             };
             pass.record(&mut ctx);
