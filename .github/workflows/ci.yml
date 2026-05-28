@@ -214,25 +214,35 @@ jobs:
         run: |
           # Phase 0 catchup: bin/ and templates/ and starter-kits/ may only
           # import the engine-api facade crate. Internal crates (engine_core,
-          # engine_render, engine_script, engine_asset, …) must not be
-          # imported directly from these locations. This guard is the
-          # interim mechanism until engine-api activates (ADR-050) and
-          # cargo-semver-checks owns the contract surface end-to-end.
-          # While engine-api is empty (pre-Phase-10), the guard still
-          # rejects internal-crate imports from bin/ etc. — bins use
-          # whichever internal crates they currently consume directly
-          # (e.g. bin/engine-repl uses engine_script), and that allowlist
-          # is documented inline here. Phase 10's engine-api activation
-          # tightens this to "only engine_api may be imported from bin/."
+          # engine_script, engine_asset, …) must not be imported directly
+          # from these locations. This guard is the interim mechanism
+          # until engine-api activates (ADR-050) and cargo-semver-checks
+          # owns the contract surface end-to-end. While engine-api is
+          # empty (pre-Phase-10), the guard still rejects internal-crate
+          # imports from bin/ etc. — bins use whichever internal crates
+          # they currently consume directly (e.g. bin/engine-repl uses
+          # engine_script), and that allowlist is documented inline here.
+          # Phase 10's engine-api activation tightens this to "only
+          # engine_api may be imported from bin/."
           #
           # Current allowlist of internal crates that bin/ + templates/
           # may import (the pre-Phase-10 reality):
-          #   - engine_script (used by bin/engine-repl, bin/engine-debug)
+          #   - engine_script   (bin/engine-repl, bin/engine-debug)
           #   - engine_asset, engine_core, engine_telemetry, engine_platform
-          #     (used by Phase-0–4 CLIs and benches)
+          #                     (Phase-0–4 CLIs and benches)
+          #   - engine_math     (frame-pacing bench scene generation)
+          #   - engine_render + engine_gpu (engine-bench-frame-pacing only,
+          #                     for upscaler + render-graph fixture access;
+          #                     engineering-only bench per ADR-005 + ADR-049,
+          #                     not user-facing — relocated allowlist 2026-05-28)
           # Future state (post-Phase-10): only engine_api.
+          #
+          # The regex blocklists the strictly-internal stub crates that
+          # have no consumer in bin/ today; `render` + `gpu` were dropped
+          # 2026-05-28 because bin/engine-bench-frame-pacing legitimately
+          # consumes them.
           if [ -d bin ] || [ -d templates ] || [ -d starter-kits ]; then
-            hits=$(grep -rnE 'use engine_(reflect|i18n|render|gpu|audio|ai|net|physics|ui|editor|hub_core|plugin_api)\b' \
+            hits=$(grep -rnE 'use engine_(reflect|i18n|audio|ai|net|physics|ui|editor|hub_core|plugin_api)\b' \
                 bin templates starter-kits 2>/dev/null \
                 | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
                 | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
