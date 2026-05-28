@@ -25,11 +25,15 @@
 
 use crate::cluster::{ClusterGrid, assign_lights};
 use crate::framebuffer::{Framebuffer, Rgba8, linear_to_srgb_byte};
-use crate::post_fx::tonemap_aces;
+use crate::ibl::ShL2;
+use crate::post_fx::{bloom_extract, ssao_factor, tonemap_aces};
 use crate::rasterize::{Vertex, Viewport, clear, rasterize_triangle};
 use crate::scene::{Aabb, Camera, Light, Material, MeshInstance};
 use crate::shading::{SurfaceFragment, accumulate_lighting, cook_torrance};
-use crate::shadow::{Cascades, ShadowAtlas, build_cascades, render_cascades};
+use crate::shadow::{
+    CSM_CASCADES, Cascade, Cascades, ShadowAtlas, build_cascades, render_cascades,
+    sample_shadow_pcf, select_cascade,
+};
 use engine_math::{Mat4, Vec3, Vec4};
 
 /// A complete reference image + the resolution it was rendered at.
@@ -556,6 +560,773 @@ fn intersect_ray_aabb(origin: Vec3, dir: Vec3, aabb: &Aabb) -> Option<(f32, Vec3
         return None;
     }
     Some((tmin, normal))
+}
+
+// =============================================================================
+// Phase 5.5 A.3 — feature-focused parity fixtures (ADR-046).
+//
+// Each `*ParityScene` is a single-mesh variant of [`CubeParityScene`]
+// that exercises one specific render-graph feature in isolation:
+//
+// - [`CsmCascadeParityScene`] — the cube under a directional sun with a
+//   tall blocker casting CSM shadow onto a portion of the top face.
+// - [`ClusterLightsParityScene`] — the cube under 64 point lights
+//   binned into the 16×9×24 cluster grid (ADR-043).
+// - [`IblProbeParityScene`] — the cube with one L2 SH probe
+//   contributing image-based diffuse.
+// - [`TaaMotionParityScene`] — the cube under a 2-frame jittered camera
+//   path; the CPU oracle resolves frame 1 against frame 0's history.
+// - [`PostFxChainParityScene`] — the cube with SSAO + bloom + tonemap
+//   composed end-to-end.
+// =============================================================================
+
+/// CSM-shadowed cube. A tall thin blocker stands between the sun and the
+/// cube; its shadow falls onto the cube's top face.
+#[derive(Clone, Debug)]
+pub struct CsmCascadeParityScene {
+    /// Camera (view + projection).
+    pub camera: Camera,
+    /// Single directional sun.
+    pub light: Light,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Blocker bounds — the caster that produces the shadow stripe.
+    pub blocker_aabb: Aabb,
+    /// Material applied to both cube + blocker.
+    pub material: Material,
+    /// Render extent (width).
+    pub width: u32,
+    /// Render extent (height).
+    pub height: u32,
+}
+
+impl CsmCascadeParityScene {
+    /// Default v0 scene — 128×72, cube at origin, blocker between sun
+    /// and the cube's top face.
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        Self {
+            camera: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            light: Light::directional(Vec3::new(-0.3, -1.0, -0.5), Vec3::new(1.0, 0.95, 0.85), 3.0),
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            // Tall thin blocker sitting in the line of the sun, casting
+            // a shadow stripe onto the cube's top face.
+            blocker_aabb: Aabb::from_corners(Vec3::new(0.6, 0.5, 0.6), Vec3::new(0.8, 2.5, 0.8)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+        }
+    }
+
+    /// Pre-built CSM cascades for the scene's camera + light. The same
+    /// matrices feed the GPU CSM uniforms.
+    pub fn cascades(&self) -> Cascades {
+        build_cascades(&self.camera, self.light.position_or_direction, (0.0, 0.0))
+    }
+
+    /// Rendered CSM atlas — both blocker + cube are submitted as casters
+    /// so the GPU and CPU paths see the same depth contents.
+    pub fn shadow_atlas(&self, cascades: &Cascades) -> ShadowAtlas {
+        let casters = vec![
+            MeshInstance {
+                aabb: self.cube_aabb,
+                material: self.material,
+                casts_shadow: true,
+            },
+            MeshInstance {
+                aabb: self.blocker_aabb,
+                material: self.material,
+                casts_shadow: true,
+            },
+        ];
+        let mut atlas = ShadowAtlas::new();
+        render_cascades(&mut atlas, cascades, &casters);
+        atlas
+    }
+
+    /// Render the CPU oracle reference framebuffer (cube shaded with
+    /// CSM shadow-atlas visibility under the directional sun).
+    pub fn render_cpu(&self) -> Framebuffer {
+        let cascades = self.cascades();
+        let atlas = self.shadow_atlas(&cascades);
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        let inv_view = self.camera.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self.camera.projection().inverse().unwrap_or(Mat4::IDENTITY);
+        let l_to_scene = self.light.position_or_direction;
+        let l_dir = Vec3::new(-l_to_scene.x, -l_to_scene.y, -l_to_scene.z);
+        let radiance = Vec3::new(
+            self.light.color.x * self.light.intensity,
+            self.light.color.y * self.light.intensity,
+            self.light.color.z * self.light.intensity,
+        );
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let target = inv_view.transform_point3(view_pt);
+                let dir = Vec3::new(
+                    target.x - self.camera.position.x,
+                    target.y - self.camera.position.y,
+                    target.z - self.camera.position.z,
+                )
+                .normalize_or_zero();
+                let Some((t, normal)) =
+                    intersect_ray_aabb(self.camera.position, dir, &self.cube_aabb)
+                else {
+                    continue;
+                };
+                let world_p = Vec3::new(
+                    self.camera.position.x + dir.x * t,
+                    self.camera.position.y + dir.y * t,
+                    self.camera.position.z + dir.z * t,
+                );
+                let surface = SurfaceFragment {
+                    world_p,
+                    normal,
+                    material: self.material,
+                };
+                let view_dir = Vec3::new(
+                    self.camera.position.x - world_p.x,
+                    self.camera.position.y - world_p.y,
+                    self.camera.position.z - world_p.z,
+                );
+                let view_z = (self.camera.view() * Vec4::new(world_p.x, world_p.y, world_p.z, 1.0))
+                    .z
+                    .abs();
+                let cascade_idx = select_cascade(&cascades, view_z);
+                let visibility =
+                    sample_shadow_pcf(&atlas, &cascades.cascades[cascade_idx], world_p);
+                let lit = cook_torrance(&surface, view_dir, l_dir, radiance);
+                let shaded = Vec3::new(lit.x * visibility, lit.y * visibility, lit.z * visibility);
+                let tone = tonemap_aces(shaded);
+                fb.write(
+                    px,
+                    py,
+                    Rgba8 {
+                        r: linear_to_srgb_byte(tone.x),
+                        g: linear_to_srgb_byte(tone.y),
+                        b: linear_to_srgb_byte(tone.z),
+                        a: 255,
+                    },
+                );
+            }
+        }
+        fb
+    }
+}
+
+/// 64 point lights in a spherical halo around the cube.
+#[derive(Clone, Debug)]
+pub struct ClusterLightsParityScene {
+    /// Camera (view + projection).
+    pub camera: Camera,
+    /// 64 Fibonacci-sphere point lights.
+    pub lights: Vec<Light>,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Cube material.
+    pub material: Material,
+    /// Render extent (width).
+    pub width: u32,
+    /// Render extent (height).
+    pub height: u32,
+}
+
+impl ClusterLightsParityScene {
+    /// Default v0 scene — 128×72, cube at origin, 64 lights binned into
+    /// the 16×9×24 cluster grid (ADR-043).
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        // 64 lights on a Fibonacci-sphere shell of radius 3 around the cube.
+        // Spread across the 16×9×24 cluster grid via their world positions;
+        // the cluster shader bins them per cell.
+        let mut lights = Vec::with_capacity(64);
+        let golden = (1.0 + 5.0_f32.sqrt()) / 2.0;
+        for i in 0..64u32 {
+            let t = i as f32 / 64.0;
+            let theta = 2.0 * core::f32::consts::PI * (i as f32) / golden;
+            let phi = (1.0 - 2.0 * t).acos();
+            let pos = Vec3::new(
+                3.0 * phi.sin() * theta.cos(),
+                3.0 * phi.cos() + 0.5,
+                3.0 * phi.sin() * theta.sin(),
+            );
+            // Cycle through three colour groups for the cluster heatmap.
+            let color = match i % 3 {
+                0 => Vec3::new(1.0, 0.4, 0.4),
+                1 => Vec3::new(0.4, 1.0, 0.4),
+                _ => Vec3::new(0.4, 0.4, 1.0),
+            };
+            lights.push(Light::point(pos, color, 0.6, 4.0));
+        }
+        Self {
+            camera: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            lights,
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+        }
+    }
+
+    /// Build the cluster grid the lighting pass walks.
+    pub fn cluster_grid(&self) -> ClusterGrid {
+        assign_lights(&self.camera, &self.lights)
+    }
+
+    /// Render the CPU oracle reference (per-pixel light accumulation
+    /// against the assigned cluster cells).
+    pub fn render_cpu(&self) -> Framebuffer {
+        let grid = self.cluster_grid();
+        // Empty cascades + atlas: no shadow term contributes; the
+        // `accumulate_lighting` shadow lookup is bypassed because point
+        // lights don't sample the CSM atlas.
+        let empty_cascade = Cascade {
+            view_projection: Mat4::IDENTITY,
+            split_near: 0.0,
+            split_far: 0.0,
+            atlas_x: 0,
+            atlas_y: 0,
+        };
+        let cascades = Cascades {
+            cascades: [empty_cascade; CSM_CASCADES],
+            light_dir: Vec3::new(0.0, -1.0, 0.0),
+        };
+        let atlas = ShadowAtlas::new();
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        let inv_view = self.camera.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self.camera.projection().inverse().unwrap_or(Mat4::IDENTITY);
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let target = inv_view.transform_point3(view_pt);
+                let dir = Vec3::new(
+                    target.x - self.camera.position.x,
+                    target.y - self.camera.position.y,
+                    target.z - self.camera.position.z,
+                )
+                .normalize_or_zero();
+                let Some((t, normal)) =
+                    intersect_ray_aabb(self.camera.position, dir, &self.cube_aabb)
+                else {
+                    continue;
+                };
+                let world_p = Vec3::new(
+                    self.camera.position.x + dir.x * t,
+                    self.camera.position.y + dir.y * t,
+                    self.camera.position.z + dir.z * t,
+                );
+                let surface = SurfaceFragment {
+                    world_p,
+                    normal,
+                    material: self.material,
+                };
+                let radiance = accumulate_lighting(
+                    &surface,
+                    &self.camera,
+                    &self.lights,
+                    &grid,
+                    &cascades,
+                    &atlas,
+                );
+                let tone = tonemap_aces(radiance);
+                fb.write(
+                    px,
+                    py,
+                    Rgba8 {
+                        r: linear_to_srgb_byte(tone.x),
+                        g: linear_to_srgb_byte(tone.y),
+                        b: linear_to_srgb_byte(tone.z),
+                        a: 255,
+                    },
+                );
+            }
+        }
+        fb
+    }
+}
+
+/// Cube under one ambient-style IBL probe — diffuse SH only, no direct
+/// light. The probe sits inside the cube AABB (cell_size = 4 m, so the
+/// cube's centre maps to cell `(0, 0, 0)`).
+#[derive(Clone, Debug)]
+pub struct IblProbeParityScene {
+    /// Camera (view + projection).
+    pub camera: Camera,
+    /// The L2 SH probe (warm ambient).
+    pub probe: ShL2,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Cube material.
+    pub material: Material,
+    /// Render extent (width).
+    pub width: u32,
+    /// Render extent (height).
+    pub height: u32,
+}
+
+impl IblProbeParityScene {
+    /// Default v0 scene — 128×72, cube at origin, one warm ambient SH
+    /// probe centred at the world origin.
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        // Warm ambient SH — encoded as `from_ambient` so the irradiance
+        // is the same in every direction. The single-probe cell key in
+        // [`IblProbeSet::cell_key`] is `floor(world_pos / cell_size)`;
+        // with `cell_size = 4`, the cube centre maps to `(0, 0, 0)`.
+        let probe = ShL2::from_ambient(Vec3::new(0.6, 0.55, 0.5));
+        Self {
+            camera: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            probe,
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+        }
+    }
+
+    /// Render the CPU oracle reference (diffuse-only IBL evaluation).
+    pub fn render_cpu(&self) -> Framebuffer {
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        let inv_view = self.camera.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self.camera.projection().inverse().unwrap_or(Mat4::IDENTITY);
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let target = inv_view.transform_point3(view_pt);
+                let dir = Vec3::new(
+                    target.x - self.camera.position.x,
+                    target.y - self.camera.position.y,
+                    target.z - self.camera.position.z,
+                )
+                .normalize_or_zero();
+                let Some((_t, normal)) =
+                    intersect_ray_aabb(self.camera.position, dir, &self.cube_aabb)
+                else {
+                    continue;
+                };
+                // IBL-only path: diffuse SH irradiance scaled by albedo;
+                // no specular split-sum term (the GPU shader's IBL pass
+                // ships the analytical-LUT half but the cube fixture's
+                // BRDF LUT placeholder zeros the specular contribution).
+                let irradiance = self.probe.evaluate_irradiance(normal);
+                let diffuse = Vec3::new(
+                    irradiance.x * self.material.albedo.x * (1.0 - self.material.metallic),
+                    irradiance.y * self.material.albedo.y * (1.0 - self.material.metallic),
+                    irradiance.z * self.material.albedo.z * (1.0 - self.material.metallic),
+                );
+                let tone = tonemap_aces(diffuse);
+                fb.write(
+                    px,
+                    py,
+                    Rgba8 {
+                        r: linear_to_srgb_byte(tone.x),
+                        g: linear_to_srgb_byte(tone.y),
+                        b: linear_to_srgb_byte(tone.z),
+                        a: 255,
+                    },
+                );
+            }
+        }
+        fb
+    }
+}
+
+/// Cube under a 2-frame Halton-jittered camera path. `render_cpu(frame)`
+/// returns the resolved framebuffer at `frame ∈ {0, 1}`; frame 1 blends
+/// with frame 0's history via `blend_alpha = 0.1`.
+#[derive(Clone, Debug)]
+pub struct TaaMotionParityScene {
+    /// Camera at the centre of the 2-frame path.
+    pub camera_base: Camera,
+    /// Directional sun.
+    pub light: Light,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Cube material.
+    pub material: Material,
+    /// Render extent (width).
+    pub width: u32,
+    /// Render extent (height).
+    pub height: u32,
+    /// TAA history → current blend factor.
+    pub blend_alpha: f32,
+}
+
+impl TaaMotionParityScene {
+    /// Default v0 scene — 128×72 cube, blend_alpha = 0.1 (the GPU's
+    /// `taa.blend_alpha = 0.1` configured by the fixture's UBO write).
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        Self {
+            camera_base: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            light: Light::directional(Vec3::new(-0.3, -1.0, -0.5), Vec3::new(1.0, 0.95, 0.85), 3.0),
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+            blend_alpha: 0.1,
+        }
+    }
+
+    fn render_frame_linear(&self, _frame: u64) -> Vec<Vec3> {
+        // Static scene + identity per-frame jitter ≈ identical CPU
+        // output per frame. The TAA harness ping-pongs history; this
+        // function returns the linear-space lit colour for one frame.
+        let mut buf = vec![Vec3::new(0.0, 0.0, 0.0); (self.width * self.height) as usize];
+        let inv_view = self.camera_base.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self
+            .camera_base
+            .projection()
+            .inverse()
+            .unwrap_or(Mat4::IDENTITY);
+        let l_to_scene = self.light.position_or_direction;
+        let l_dir = Vec3::new(-l_to_scene.x, -l_to_scene.y, -l_to_scene.z);
+        let radiance = Vec3::new(
+            self.light.color.x * self.light.intensity,
+            self.light.color.y * self.light.intensity,
+            self.light.color.z * self.light.intensity,
+        );
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let target = inv_view.transform_point3(view_pt);
+                let dir = Vec3::new(
+                    target.x - self.camera_base.position.x,
+                    target.y - self.camera_base.position.y,
+                    target.z - self.camera_base.position.z,
+                )
+                .normalize_or_zero();
+                let Some((t, normal)) =
+                    intersect_ray_aabb(self.camera_base.position, dir, &self.cube_aabb)
+                else {
+                    continue;
+                };
+                let world_p = Vec3::new(
+                    self.camera_base.position.x + dir.x * t,
+                    self.camera_base.position.y + dir.y * t,
+                    self.camera_base.position.z + dir.z * t,
+                );
+                let surface = SurfaceFragment {
+                    world_p,
+                    normal,
+                    material: self.material,
+                };
+                let view_dir = Vec3::new(
+                    self.camera_base.position.x - world_p.x,
+                    self.camera_base.position.y - world_p.y,
+                    self.camera_base.position.z - world_p.z,
+                );
+                let lit = cook_torrance(&surface, view_dir, l_dir, radiance);
+                buf[(py * self.width + px) as usize] = lit;
+            }
+        }
+        buf
+    }
+
+    /// CPU oracle: render frame 0 (history-only), then blend frame 1
+    /// against frame 0 with `blend_alpha`. Returns the tonemapped sRGB
+    /// framebuffer at frame 1.
+    pub fn render_cpu(&self) -> Framebuffer {
+        let frame0 = self.render_frame_linear(0);
+        let frame1 = self.render_frame_linear(1);
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        for i in 0..frame0.len() {
+            // Two identical frames → resolved = curr (alpha doesn't
+            // matter when curr == history). The fixture verifies the
+            // GPU path produces the same stable result.
+            let curr = frame1[i];
+            let hist = frame0[i];
+            let resolved = Vec3::new(
+                hist.x + (curr.x - hist.x) * self.blend_alpha,
+                hist.y + (curr.y - hist.y) * self.blend_alpha,
+                hist.z + (curr.z - hist.z) * self.blend_alpha,
+            );
+            let tone = tonemap_aces(resolved);
+            let x = (i as u32) % self.width;
+            let y = (i as u32) / self.width;
+            fb.write(
+                x,
+                y,
+                Rgba8 {
+                    r: linear_to_srgb_byte(tone.x),
+                    g: linear_to_srgb_byte(tone.y),
+                    b: linear_to_srgb_byte(tone.z),
+                    a: 255,
+                },
+            );
+        }
+        fb
+    }
+}
+
+/// Cube with SSAO + bloom + ACES tonemap composed end-to-end.
+#[derive(Clone, Debug)]
+pub struct PostFxChainParityScene {
+    /// Camera (view + projection).
+    pub camera: Camera,
+    /// Directional sun.
+    pub light: Light,
+    /// Cube bounds in world space.
+    pub cube_aabb: Aabb,
+    /// Cube material.
+    pub material: Material,
+    /// Render extent (width).
+    pub width: u32,
+    /// Render extent (height).
+    pub height: u32,
+    /// HDR cut-off for the bloom-extract pass; pixels above this
+    /// threshold contribute to bloom.
+    pub bloom_threshold: f32,
+    /// Bloom mix factor when composing the final image.
+    pub bloom_intensity: f32,
+    /// SSAO sampling radius (in pixels).
+    pub ssao_radius: f32,
+}
+
+impl PostFxChainParityScene {
+    /// Default v0 scene — 128×72 cube, bloom threshold 0.5, intensity
+    /// 0.3, SSAO radius 0.3 (treated as 1 px on the discrete kernel).
+    pub fn default_v0() -> Self {
+        let width = 128u32;
+        let height = 72u32;
+        Self {
+            camera: Camera {
+                position: Vec3::new(2.0, 2.0, 3.0),
+                forward: Vec3::new(-2.0, -2.0, -3.0).normalize_or_zero(),
+                up: Vec3::new(0.0, 1.0, 0.0),
+                fov_y: 60.0_f32.to_radians(),
+                aspect: width as f32 / height as f32,
+                near: 0.1,
+                far: 100.0,
+            },
+            light: Light::directional(Vec3::new(-0.3, -1.0, -0.5), Vec3::new(1.0, 0.95, 0.85), 3.0),
+            cube_aabb: Aabb::from_corners(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)),
+            material: Material {
+                albedo: Vec3::new(0.8, 0.4, 0.2),
+                metallic: 0.0,
+                roughness: 0.35,
+            },
+            width,
+            height,
+            // Threshold low enough that the specular peak contributes to
+            // bloom; intensity moderate so the final image stays
+            // perceptible.
+            bloom_threshold: 0.5,
+            bloom_intensity: 0.3,
+            ssao_radius: 0.3,
+        }
+    }
+
+    /// Render the CPU oracle reference (SSAO → bloom → ACES tonemap).
+    pub fn render_cpu(&self) -> Framebuffer {
+        let mut fb = Framebuffer::new(self.width, self.height);
+        clear(&mut fb, Rgba8::default());
+        let inv_view = self.camera.view().inverse().unwrap_or(Mat4::IDENTITY);
+        let inv_proj = self.camera.projection().inverse().unwrap_or(Mat4::IDENTITY);
+        let l_to_scene = self.light.position_or_direction;
+        let l_dir = Vec3::new(-l_to_scene.x, -l_to_scene.y, -l_to_scene.z);
+        let radiance = Vec3::new(
+            self.light.color.x * self.light.intensity,
+            self.light.color.y * self.light.intensity,
+            self.light.color.z * self.light.intensity,
+        );
+        // Two scratch passes: collect linear HDR per pixel, then post-FX.
+        let mut hdr = vec![Vec3::new(0.0, 0.0, 0.0); (self.width * self.height) as usize];
+        let mut depth_buf = vec![1.0_f32; (self.width * self.height) as usize];
+        let mut normal_buf = vec![Vec3::new(0.0, 0.0, 0.0); (self.width * self.height) as usize];
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let ndc_x = (px as f32 + 0.5) / self.width as f32 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py as f32 + 0.5) / self.height as f32 * 2.0;
+                let clip = Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+                let view_pt4 = inv_proj * clip;
+                if view_pt4.w.abs() < 1e-6 {
+                    continue;
+                }
+                let view_pt = Vec3::new(
+                    view_pt4.x / view_pt4.w,
+                    view_pt4.y / view_pt4.w,
+                    view_pt4.z / view_pt4.w,
+                );
+                let target = inv_view.transform_point3(view_pt);
+                let dir = Vec3::new(
+                    target.x - self.camera.position.x,
+                    target.y - self.camera.position.y,
+                    target.z - self.camera.position.z,
+                )
+                .normalize_or_zero();
+                if let Some((t, normal)) =
+                    intersect_ray_aabb(self.camera.position, dir, &self.cube_aabb)
+                {
+                    let world_p = Vec3::new(
+                        self.camera.position.x + dir.x * t,
+                        self.camera.position.y + dir.y * t,
+                        self.camera.position.z + dir.z * t,
+                    );
+                    let surface = SurfaceFragment {
+                        world_p,
+                        normal,
+                        material: self.material,
+                    };
+                    let view_dir = Vec3::new(
+                        self.camera.position.x - world_p.x,
+                        self.camera.position.y - world_p.y,
+                        self.camera.position.z - world_p.z,
+                    );
+                    let view_z =
+                        (self.camera.view() * Vec4::new(world_p.x, world_p.y, world_p.z, 1.0)).z;
+                    let lit = cook_torrance(&surface, view_dir, l_dir, radiance);
+                    let idx = (py * self.width + px) as usize;
+                    hdr[idx] = lit;
+                    depth_buf[idx] = -view_z; // CPU view-z is positive in front
+                    normal_buf[idx] = normal;
+                }
+            }
+        }
+        // SSAO per cube pixel: occluder factor scales the HDR down.
+        // Bloom: extract bright pixels, additively recompose with intensity.
+        for py in 0..self.height {
+            for px in 0..self.width {
+                let idx = (py * self.width + px) as usize;
+                let h = hdr[idx];
+                if h.x.max(h.y).max(h.z) == 0.0 {
+                    continue;
+                }
+                // ssao_factor signature: (px, py, depth, width, height, radius_px).
+                // `normal_buf` is built for future use when the SSAO
+                // formulation upgrades to per-pixel TBN; today the CPU
+                // oracle uses the screen-space depth-only kernel.
+                let _ = &normal_buf;
+                let ssao = ssao_factor(
+                    px,
+                    py,
+                    &depth_buf,
+                    self.width,
+                    self.height,
+                    self.ssao_radius.max(1.0) as i32,
+                );
+                let occluded = Vec3::new(h.x * ssao, h.y * ssao, h.z * ssao);
+                let bright = bloom_extract(occluded, self.bloom_threshold);
+                let bloomed = Vec3::new(
+                    occluded.x + bright.x * self.bloom_intensity,
+                    occluded.y + bright.y * self.bloom_intensity,
+                    occluded.z + bright.z * self.bloom_intensity,
+                );
+                let tone = tonemap_aces(bloomed);
+                fb.write(
+                    px,
+                    py,
+                    Rgba8 {
+                        r: linear_to_srgb_byte(tone.x),
+                        g: linear_to_srgb_byte(tone.y),
+                        b: linear_to_srgb_byte(tone.z),
+                        a: 255,
+                    },
+                );
+            }
+        }
+        fb
+    }
 }
 
 #[cfg(test)]

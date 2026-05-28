@@ -16,5 +16,23 @@
 #[path = "pixel_parity/harness.rs"]
 mod harness;
 
+#[path = "pixel_parity/common.rs"]
+mod common;
+
 #[path = "pixel_parity/cube.rs"]
 mod cube;
+
+#[path = "pixel_parity/csm_4_cascade.rs"]
+mod csm_4_cascade;
+
+#[path = "pixel_parity/cluster_64_lights.rs"]
+mod cluster_64_lights;
+
+#[path = "pixel_parity/ibl_probe.rs"]
+mod ibl_probe;
+
+#[path = "pixel_parity/taa_motion.rs"]
+mod taa_motion;
+
+#[path = "pixel_parity/post_fx_chain.rs"]
+mod post_fx_chain;

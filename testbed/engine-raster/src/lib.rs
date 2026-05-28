@@ -77,8 +77,9 @@ pub use post_fx::{
 };
 pub use rasterize::{Vertex, Viewport, clear, rasterize_triangle};
 pub use sample::{
-    CubeParityScene, GoldenScene, cluster_lights_scene, combined_deferred_scene,
-    golden_triangle_scene, shadow_heavy_scene,
+    ClusterLightsParityScene, CsmCascadeParityScene, CubeParityScene, GoldenScene,
+    IblProbeParityScene, PostFxChainParityScene, TaaMotionParityScene, cluster_lights_scene,
+    combined_deferred_scene, golden_triangle_scene, shadow_heavy_scene,
 };
 pub use scene::{Aabb, Camera, Frustum, Light, LightType, Material, MeshInstance, Plane};
 pub use shading::{
