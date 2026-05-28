@@ -90,6 +90,13 @@ pub enum TextureFormat {
     Rgba8Unorm,
     /// 8-bit BGRA, sRGB-encoded. Common Windows / macOS swapchain default.
     Bgra8UnormSrgb,
+    /// 8-bit BGRA, linear. Used as the tonemap output target (Phase 5.5
+    /// A.2a routes around wgpu 29's missing `bgra8unorm_srgb` storage
+    /// path by writing `bgra8unorm` + manual linear→sRGB encoding in
+    /// `shaders/tonemap.wgsl`). Storage writes require the
+    /// [`crate::DeviceFeatures::bgra8unorm_storage`] adapter feature
+    /// (Polaris/RADV exposes it).
+    Bgra8Unorm,
     /// 16-bit float RGBA. HDR intermediate.
     Rgba16Float,
     /// 16-bit float RG. Used by the BRDF LUT bake (ADR-065 §3) — the
@@ -99,6 +106,12 @@ pub enum TextureFormat {
     /// the same `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` feature
     /// that unlocked the R16F + BGRA8UNORM storage writes in A.2a.
     Rg16Float,
+    /// 16-bit float single-channel. Used by the SSAO output target —
+    /// `shaders/ssao.wgsl` declares
+    /// `texture_storage_2d<r16float, write>`. Storage writes share the
+    /// same `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` adapter feature
+    /// as RG16F.
+    R16Float,
     /// 32-bit float depth.
     Depth32Float,
     /// 32-bit float depth + 8-bit stencil.
@@ -129,8 +142,10 @@ impl TextureFormat {
             TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
             TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
             TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
             TextureFormat::Rg16Float => wgpu::TextureFormat::Rg16Float,
+            TextureFormat::R16Float => wgpu::TextureFormat::R16Float,
             TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
             TextureFormat::Depth32FloatStencil8 => wgpu::TextureFormat::Depth32FloatStencil8,
             TextureFormat::Depth24PlusStencil8 => wgpu::TextureFormat::Depth24PlusStencil8,
@@ -479,8 +494,10 @@ mod tests {
             TextureFormat::Rgba8UnormSrgb,
             TextureFormat::Rgba8Unorm,
             TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Bgra8Unorm,
             TextureFormat::Rgba16Float,
             TextureFormat::Rg16Float,
+            TextureFormat::R16Float,
             TextureFormat::Depth32Float,
             TextureFormat::Depth32FloatStencil8,
             TextureFormat::Depth24PlusStencil8,

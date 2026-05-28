@@ -581,6 +581,8 @@ name = "engine-render"
 version = "0.0.0"
 dependencies = [
  "engine-gpu",
+ "engine-math",
+ "engine-raster",
  "engine-shader",
 ]
 

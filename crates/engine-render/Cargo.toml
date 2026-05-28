@@ -9,5 +9,15 @@ rust-version.workspace = true
 engine-gpu = { workspace = true }
 engine-shader = { workspace = true }
 
+# Pixel-parity fixtures in tests/pixel_parity/ call engine-raster's
+# scene functions + compare_images() oracle (Phase 5.5 A.3, ADR-046).
+# Dev-only — the lib build graph never sees engine-raster, preserving
+# the one-way dependency at runtime (engine-raster dev-deps engine-render
+# for its contract-cross-check tests; the inverse edge here only exists
+# in the test target, so the lib build graph stays a DAG).
+[dev-dependencies]
+engine-raster = { workspace = true }
+engine-math = { workspace = true }
+
 [lints]
 workspace = true

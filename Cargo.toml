@@ -46,6 +46,14 @@ engine-api = { path = "crates/engine-api" }
 engine-plugin-api = { path = "crates/engine-plugin-api" }
 engine-upscale-vendor = { path = "crates/engine-upscale-vendor" }
 
+# The software rasterizer is a testbed crate that lives in `testbed/`,
+# but Phase 5.5 A.3's pixel-parity fixtures in `engine-render/tests/`
+# need access to its scene functions + `compare_images()` oracle
+# (ADR-046). Workspace-dep declaration lets `engine-render`'s
+# `[dev-dependencies]` resolve it by path while keeping `engine-raster`
+# out of the lib-build graph for non-test targets.
+engine-raster = { path = "testbed/engine-raster" }
+
 # The Slang toolchain ships both a binary and a library; engine-render
 # consumes the library half (`Bundle`, `Artifact`, `Target`) so the
 # renderer can build engine_gpu pipelines from artefacts the
