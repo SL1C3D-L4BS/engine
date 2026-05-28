@@ -1550,20 +1550,24 @@ impl Pass for TaaPass {
 /// writes the low-frequency bright-pass layer for the tonemap pass to
 /// composite.
 ///
-/// Phase 5.5 A.2b-ii wires the **extract** dispatch only. The
-/// downsample + upsample mip chain (per ADR-065 §5 / 5 mip levels) is
-/// A.2c scope — it requires per-mip transient texture allocation that
-/// the foundation transient pool doesn't yet sequence (each mip is a
-/// distinct view of the same texture, or a separate texture). Pixel
-/// parity for the bloom kernel (Jimenez 2014 dual-filter Kawase vs.
-/// CPU oracle `gaussian_blur_3x3`) is absorbed by ADR-046's 1/255
-/// channel tolerance, so the extract-only path is functional but not
-/// quality-final until A.2c.
+/// Phase 5.5 A.2d ships the full mip chain (extract + 4 downsample +
+/// 4 upsample = 9 dispatches per frame). The bloom target texture is
+/// allocated by the host renderer with
+/// [`contracts::BLOOM_MIP_LEVELS`] mip levels (5 total); each mip is
+/// bound independently via [`engine_gpu::Texture::mip_view`]. The
+/// final composite lands in mip 0 which TonemapPass samples (its
+/// `textureSampleLevel(bloom, _, _, 0.0)` reads the level explicitly).
+///
+/// The kernel is a Jimenez-2014 dual-filter Kawase blur (per ADR-065
+/// §5); ADR-046's 1/255 channel + p99 ≤ 1% tolerance absorbs the
+/// kernel-shape difference vs the CPU oracle's `gaussian_blur_3x3`.
 #[derive(Debug)]
 pub struct BloomPass {
     /// TAA-resolved HDR input (`@group(2) @binding(0)`).
     pub resolved: ResourceId,
-    /// Bloom layer output (storage texture, `@group(2) @binding(2)`).
+    /// Bloom layer output — a mip-chain texture allocated with
+    /// [`contracts::BLOOM_MIP_LEVELS`] mip levels. Mip 0 is the final
+    /// composite that downstream passes (Tonemap) read.
     pub bloom_target: ResourceId,
     /// Bloom uniforms UBO (`@group(1) @binding(0)`).
     pub bloom_uniforms: ResourceId,
@@ -1594,6 +1598,65 @@ impl BloomPass {
     }
 }
 
+/// One stage of the bloom mip chain: `(pipeline, src, dst)` plus a
+/// debug label. The record() body builds one bind group + one
+/// dispatch per stage.
+struct BloomStage<'a> {
+    label: &'a str,
+    pipeline: &'a ComputePipeline,
+    src: engine_gpu::TextureView<'a>,
+    dst: engine_gpu::TextureView<'a>,
+}
+
+fn dispatch_bloom_stage(
+    encoder: &mut engine_gpu::CommandEncoder,
+    device: &Device,
+    stage: &BloomStage<'_>,
+    bloom_u: &engine_gpu::Buffer,
+    sampler: &engine_gpu::Sampler,
+) {
+    let layout_u = stage.pipeline.bind_group_layout(1);
+    let layout_tex = stage.pipeline.bind_group_layout(2);
+    let bg_u = BindGroup::new(
+        device,
+        &BindGroupDesc {
+            label: stage.label,
+            layout: &layout_u,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::Buffer(bloom_u),
+            }],
+        },
+    );
+    let bg_tex = BindGroup::new(
+        device,
+        &BindGroupDesc {
+            label: stage.label,
+            layout: &layout_tex,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&stage.src),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(&stage.dst),
+                },
+            ],
+        },
+    );
+    let dim = dispatch_dim_for_view(&stage.dst);
+    let mut cpass = encoder.begin_compute_pass(stage.label);
+    cpass.set_pipeline(stage.pipeline);
+    cpass.set_bind_group(1, &bg_u);
+    cpass.set_bind_group(2, &bg_tex);
+    cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
+}
+
 impl Pass for BloomPass {
     fn name(&self) -> &'static str {
         "post.fx.bloom"
@@ -1608,22 +1671,24 @@ impl Pass for BloomPass {
         set.add(self.bloom_target);
     }
     fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
-        // BloomPass owns three pipelines (extract → downsample → upsample
-        // per ADR-065 §5, 5 mip levels = `contracts::BLOOM_MIP_LEVELS`).
-        // A.2b-ii wires the extract dispatch; A.2c chains the
-        // downsample + upsample dispatches across the mip chain.
         self.pipeline_extract = Some(build_bloom_extract_pipeline(device)?);
         self.pipeline_downsample = Some(build_bloom_downsample_pipeline(device)?);
         self.pipeline_upsample = Some(build_bloom_upsample_pipeline(device)?);
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
-        // ADR-075 §1 — six-step template (extract dispatch only;
-        // downsample + upsample chain lands in A.2c).
+        // ADR-075 §1 — six-step template. ADR-065 §5 mip chain: 1
+        // extract + 4 downsample + 4 upsample = 9 dispatches.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(extract) = self.pipeline_extract.as_ref() else {
+            return;
+        };
+        let Some(downsample) = self.pipeline_downsample.as_ref() else {
+            return;
+        };
+        let Some(upsample) = self.pipeline_upsample.as_ref() else {
             return;
         };
         let Some(resources) = ctx.resources else {
@@ -1632,55 +1697,80 @@ impl Pass for BloomPass {
         let Some(bloom_u) = resources.resolve_buffer(self.bloom_uniforms) else {
             return;
         };
-        let Some(src) = resources.resolve_view(self.resolved) else {
+        let Some(resolved_view) = resources.resolve_view(self.resolved) else {
             return;
         };
         let Some(sampler) = resources.resolve_sampler(self.linear_sampler) else {
             return;
         };
-        let Some(dst) = resources.resolve_view(self.bloom_target) else {
+        // The bloom mip chain reads/writes individual mip levels of a
+        // single bloom_target texture. Each mip needs its own view —
+        // both because storage-texture writes accept only
+        // `mip_level_count = 1` views, and because sampling needs to
+        // target a specific mip. Acquire per-mip views from the
+        // resolved texture handle (Phase 5.5 A.2d added
+        // `engine_gpu::Texture::mip_view`). The resolver's
+        // resolve_view returns the default view; we need direct
+        // texture access.
+        //
+        // For A.2d, the resolver doesn't yet expose `resolve_texture`,
+        // so we use the resolved view's owning texture by going
+        // through a separate `resolve_texture` accessor on the
+        // resolver. (Added in this commit alongside.)
+        let Some(bloom_tex) = resources.resolve_texture(self.bloom_target) else {
             return;
         };
-        let layout_u = extract.bind_group_layout(1);
-        let layout_tex = extract.bind_group_layout(2);
-        let bg_u = BindGroup::new(
+        let mip_count = bloom_tex.mip_level_count();
+        if mip_count < 2 {
+            // No mip chain to traverse; degrade gracefully (e.g.,
+            // unit-test path with a single-mip target).
+            return;
+        }
+        // Extract: resolved → mip 0.
+        dispatch_bloom_stage(
+            gpu.encoder,
             gpu.device,
-            &BindGroupDesc {
-                label: "post.fx.bloom.extract.bindgroup.1",
-                layout: &layout_u,
-                entries: &[BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer(bloom_u),
-                }],
+            &BloomStage {
+                label: "post.fx.bloom.extract",
+                pipeline: extract,
+                src: resolved_view,
+                dst: bloom_tex.mip_view(0),
             },
+            bloom_u,
+            sampler,
         );
-        let bg_tex = BindGroup::new(
-            gpu.device,
-            &BindGroupDesc {
-                label: "post.fx.bloom.extract.bindgroup.2",
-                layout: &layout_tex,
-                entries: &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(&src),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: BindingResource::TextureView(&dst),
-                    },
-                ],
-            },
-        );
-        let dim = dispatch_dim_for_view(&dst);
-        let mut cpass = gpu.encoder.begin_compute_pass(self.name());
-        cpass.set_pipeline(extract);
-        cpass.set_bind_group(1, &bg_u);
-        cpass.set_bind_group(2, &bg_tex);
-        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
+        // Downsample chain: mip i → mip i+1.
+        for i in 0..mip_count - 1 {
+            dispatch_bloom_stage(
+                gpu.encoder,
+                gpu.device,
+                &BloomStage {
+                    label: "post.fx.bloom.downsample",
+                    pipeline: downsample,
+                    src: bloom_tex.mip_view(i),
+                    dst: bloom_tex.mip_view(i + 1),
+                },
+                bloom_u,
+                sampler,
+            );
+        }
+        // Upsample chain (additive blend): mip i+1 → mip i, in
+        // reverse. The final composite lands at mip 0 — what
+        // TonemapPass samples via `textureSampleLevel(_, _, _, 0.0)`.
+        for i in (0..mip_count - 1).rev() {
+            dispatch_bloom_stage(
+                gpu.encoder,
+                gpu.device,
+                &BloomStage {
+                    label: "post.fx.bloom.upsample",
+                    pipeline: upsample,
+                    src: bloom_tex.mip_view(i + 1),
+                    dst: bloom_tex.mip_view(i),
+                },
+                bloom_u,
+                sampler,
+            );
+        }
     }
 }
 

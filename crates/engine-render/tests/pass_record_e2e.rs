@@ -18,8 +18,8 @@ use engine_gpu::{
     Texture, TextureDesc, TextureDimension, TextureFormat, TextureUsage,
 };
 use engine_render::{
-    CullPass, GpuFrameContext, LightingAccumulationPass, RenderGraph, ResourceId, ResourceResolver,
-    TransientResourceTable, contracts,
+    BloomPass, CullPass, GpuFrameContext, LightingAccumulationPass, RenderGraph, ResourceId,
+    ResourceResolver, TransientResourceTable, contracts,
 };
 
 fn try_device() -> Option<Device> {
@@ -313,6 +313,101 @@ fn lighting_accumulation_executes_via_resolver() {
 
     let mut user: () = ();
     let mut encoder = CommandEncoder::new(&device, "smoke.lighting.encoder");
+    let gpu = GpuFrameContext {
+        device: &device,
+        encoder: &mut encoder,
+    };
+    graph
+        .execute(0, &mut user, Some(gpu), Some(resolver))
+        .expect("execute completes");
+    let _token = queue.submit(encoder);
+}
+
+/// BloomPass executes the full ADR-065 §5 mip chain (1 extract + 4
+/// downsample + 4 upsample = 9 dispatches) against a real device.
+/// Allocates a 5-mip Rgba16Float bloom_target + a single-mip
+/// `resolved` source; the per-mip view discipline (Phase 5.5 A.2d
+/// `Texture::mip_view`) ensures each dispatch binds one specific mip
+/// level. 16×16 target keeps every mip's dispatch ≥ (1, 1, 1).
+#[test]
+fn bloom_pass_executes_via_resolver() {
+    let Some(device) = try_device() else {
+        return;
+    };
+    let queue = device.queue();
+    let mut pool = TransientResourceTable::new();
+
+    // Single-mip `resolved` source.
+    pool.register_texture(
+        ResourceId(10),
+        Texture::new(
+            &device,
+            &TextureDesc {
+                label: "smoke.bloom.resolved",
+                extent: Extent3d::new_2d(16, 16),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba16Float,
+                usage: TextureUsage::TEXTURE_BINDING
+                    | TextureUsage::STORAGE_BINDING
+                    | TextureUsage::COPY_DST,
+            },
+        ),
+    );
+
+    // 5-mip bloom_target — the mip chain BloomPass cycles through.
+    // Each mip is independently bound as both source (sampled) and
+    // destination (storage write).
+    pool.register_texture(
+        ResourceId(11),
+        Texture::new(
+            &device,
+            &TextureDesc {
+                label: "smoke.bloom.target",
+                extent: Extent3d::new_2d(16, 16),
+                mip_level_count: contracts::BLOOM_MIP_LEVELS,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba16Float,
+                usage: TextureUsage::TEXTURE_BINDING | TextureUsage::STORAGE_BINDING,
+            },
+        ),
+    );
+
+    pool.register_buffer(
+        ResourceId(20),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.bloom.uniforms",
+                // BloomUniforms: 4 × f32 = 16B.
+                size: 16,
+                usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            },
+        ),
+    );
+    pool.register_sampler(
+        ResourceId(30),
+        engine_gpu::Sampler::new(&device, SamplerDesc::linear_repeat()),
+    );
+
+    let resolver: &dyn ResourceResolver = &pool;
+
+    let mut graph = RenderGraph::new();
+    graph.add_pass(BloomPass::new(
+        ResourceId(10), // resolved
+        ResourceId(11), // bloom_target (5 mips)
+        ResourceId(20), // bloom_uniforms
+        ResourceId(30), // linear_sampler
+    ));
+    graph
+        .install_pipelines(&device)
+        .expect("BloomPass pipelines install");
+    graph.compile().expect("graph compiles");
+
+    let mut user: () = ();
+    let mut encoder = CommandEncoder::new(&device, "smoke.bloom.encoder");
     let gpu = GpuFrameContext {
         device: &device,
         encoder: &mut encoder,

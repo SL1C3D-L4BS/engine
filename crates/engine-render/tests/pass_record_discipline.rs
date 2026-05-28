@@ -129,13 +129,20 @@ fn classify(body: &str, fn_decl_window: &str) -> Shape {
         return Shape::DeliberateNoOp;
     }
     // Active template: the body must contain both short-circuit
-    // patterns AND at least one begin_*pass / set_pipeline call.
+    // patterns AND at least one Step-5 GPU-work indicator. Direct
+    // begin_*pass calls cover the inline case; helper calls
+    // (`dispatch_bloom_stage` for the bloom mip chain) cover the
+    // delegated case — the record() body still issues real GPU work,
+    // just through a helper. The helper's name encodes its contract;
+    // adding new helpers requires updating this list explicitly so
+    // the discipline can't drift silently.
     let has_gpu_sc = body.contains("ctx.gpu.as_mut()");
     let has_pipeline_sc =
         body.contains("self.pipeline.as_ref()") || body.contains("self.pipeline_extract.as_ref()");
     let has_gpu_work = body.contains("begin_compute_pass(")
         || body.contains("begin_render_pass(")
-        || body.contains("begin_render_pass_desc(");
+        || body.contains("begin_render_pass_desc(")
+        || body.contains("dispatch_bloom_stage(");
     if has_gpu_sc && has_pipeline_sc && has_gpu_work {
         Shape::Active
     } else {

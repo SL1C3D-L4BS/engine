@@ -48,6 +48,14 @@ fn cs_downsample(@builtin(global_invocation_id) gid : vec3<u32>) {
     if (gid.x >= dim.x || gid.y >= dim.y) {
         return;
     }
+    // Reference the bloom UBO so Naga's auto-derived layout keeps
+    // @group(1) populated; without this, the cs_downsample-derived
+    // layout strips the unused binding and the Rust-side bind group
+    // (one entry at @group(1) @binding(0)) fails wgpu validation
+    // against an empty layout. The reference is value-dead — the
+    // downsample doesn't visually need the soft-knee threshold —
+    // but keeps the cross-entry-point layout in sync. ADR-065 §5.
+    let _u = bloom.threshold;
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(dim);
     let src_dim = vec2<f32>(textureDimensions(src_texture));
     let texel = vec2<f32>(1.0) / src_dim;

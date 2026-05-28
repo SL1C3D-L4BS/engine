@@ -63,6 +63,15 @@ pub trait ResourceResolver: core::fmt::Debug {
 
     /// Resolve a sampler by id.
     fn resolve_sampler(&self, id: ResourceId) -> Option<&Sampler>;
+
+    /// Resolve the underlying [`engine_gpu::Texture`] by id. Required
+    /// for passes that need per-mip views (e.g. BloomPass mip chain
+    /// per ADR-065 §5) — `resolve_view` returns the default
+    /// all-mips view, not enough to bind a single-mip storage write.
+    /// Default impl returns `None`; concrete resolvers override.
+    fn resolve_texture(&self, _id: ResourceId) -> Option<&Texture> {
+        None
+    }
 }
 
 /// Default [`ResourceResolver`] implementation — a sparse, owned table
@@ -168,6 +177,10 @@ impl ResourceResolver for TransientResourceTable {
 
     fn resolve_sampler(&self, id: ResourceId) -> Option<&Sampler> {
         self.samplers.iter().find(|(i, _)| *i == id).map(|(_, s)| s)
+    }
+
+    fn resolve_texture(&self, id: ResourceId) -> Option<&Texture> {
+        self.textures.iter().find(|(i, _)| *i == id).map(|(_, t)| t)
     }
 }
 

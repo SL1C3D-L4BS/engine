@@ -268,6 +268,11 @@ impl TextureDesc<'_> {
 pub struct Texture {
     raw: wgpu::Texture,
     default_view: wgpu::TextureView,
+    /// Per-mip-level single-mip views. Pre-allocated at construction
+    /// so [`Self::mip_view`] is a borrow (no per-call wgpu cost) —
+    /// the bloom mip chain (ADR-065 §5) cycles through these every
+    /// frame.
+    mip_views: Vec<wgpu::TextureView>,
     format: TextureFormat,
     extent: Extent3d,
     dimension: TextureDimension,
@@ -288,24 +293,45 @@ impl Texture {
             usage: desc.usage.to_wgpu(),
             view_formats: &[],
         });
+        let aspect = if desc.format.is_depth() {
+            wgpu::TextureAspect::DepthOnly
+        } else {
+            wgpu::TextureAspect::All
+        };
         let default_view = raw.create_view(&wgpu::TextureViewDescriptor {
             label: Some(desc.label),
             format: Some(desc.format.to_wgpu()),
             dimension: Some(desc.dimension.view_dimension()),
-            aspect: if desc.format.is_depth() {
-                wgpu::TextureAspect::DepthOnly
-            } else {
-                wgpu::TextureAspect::All
-            },
+            aspect,
             base_mip_level: 0,
             mip_level_count: Some(desc.mip_level_count),
             base_array_layer: 0,
             array_layer_count: None,
             usage: None,
         });
+        // Pre-allocate per-mip single-mip views. ADR-065 §5 bloom
+        // chain consumers (BloomPass downsample / upsample) bind each
+        // mip independently; building each view once at allocation
+        // time avoids wgpu's per-frame view-create cost.
+        let mut mip_views = Vec::with_capacity(desc.mip_level_count as usize);
+        for level in 0..desc.mip_level_count {
+            let view = raw.create_view(&wgpu::TextureViewDescriptor {
+                label: Some(desc.label),
+                format: Some(desc.format.to_wgpu()),
+                dimension: Some(desc.dimension.view_dimension()),
+                aspect,
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                base_array_layer: 0,
+                array_layer_count: None,
+                usage: None,
+            });
+            mip_views.push(view);
+        }
         Self {
             raw,
             default_view,
+            mip_views,
             format: desc.format,
             extent: desc.extent,
             dimension: desc.dimension,
@@ -339,6 +365,38 @@ impl Texture {
         TextureView {
             raw: &self.default_view,
             extent: self.extent,
+            format: self.format,
+        }
+    }
+
+    /// Borrow a view of a single mip level (`base_mip_level = level,
+    /// mip_level_count = 1`). The view's [`TextureView::extent`]
+    /// reports the mip-level dimensions
+    /// (`width >> level`, `height >> level`, both clamped to 1).
+    ///
+    /// Bloom + similar mip-chain consumers (ADR-065 §5) bind one
+    /// per-mip view per dispatch — sampled-texture reads target a
+    /// single mip, and storage-texture writes only support
+    /// `mip_level_count = 1`.
+    ///
+    /// Panics if `level >= mip_level_count()` (caller has the count
+    /// via [`Self::mip_level_count`]; out-of-range is a programmer
+    /// error, not runtime data).
+    pub fn mip_view(&self, level: u32) -> TextureView<'_> {
+        assert!(
+            level < self.mip_level_count,
+            "mip level {level} out of range ({} mip levels)",
+            self.mip_level_count
+        );
+        let width = (self.extent.width >> level).max(1);
+        let height = (self.extent.height >> level).max(1);
+        TextureView {
+            raw: &self.mip_views[level as usize],
+            extent: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: self.extent.depth_or_array_layers,
+            },
             format: self.format,
         }
     }
