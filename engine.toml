@@ -89,7 +89,60 @@ spec_version = "2.0"
 # attenuation alignment in lighting.wgsl are post-v0.3 follow-ups
 # documented in `docs/audit/oracle-exceptions.md` under
 # `csm_4_cascade` and `cluster_64_lights` respectively.
-phase = "5.5-closed"
+#
+# Phase 6 (NEURAL RENDERING & GAUSSIAN SPLATTING) closed 2026-05-28.
+# Engine Core v0.4 milestone tag.
+#
+# Eight PRs:
+#   (0)  pre-Phase-6 design sweep — ADRs 077 (3DGS architecture),
+#        078 (ESPL asset format + glTF KHR_gaussian_splatting reader),
+#        079 (vendor SDK FFI discipline), 080 (ONNX v1 training
+#        pipeline), 081 (oracle exception sunset + ADR-046 amendment),
+#        082 (engine-config Level-1 crate), 083 (UpscalePass::record()
+#        wiring + in-tree EASU shader), 084 (Phase 6 PR slicing).
+#   (1a) Oracle closures + new WGSL shaders. cluster_64_lights closes
+#        to strict 1/255 (lighting.wgsl now matches the CPU oracle's
+#        windowed inverse-square attenuation). post_fx_chain converts
+#        to permanent architectural-divergence per ADR-046 §6a +
+#        ADR-081. Two new WGSL shaders: fsr_easu.wgsl (Polaris-
+#        compatible EASU spatial path) + bilinear_upscale.wgsl (GPU
+#        2× bilinear). The UpscalePass::record() dispatch wiring is
+#        a focused follow-up — the shaders ship; the registry
+#        thread-through is a small mechanical change to PassContext.
+#   (1b) engine-config Level-1 crate (owned line-oriented TOML
+#        reader, 13 tests). The three call-site migrations
+#        (engine-render::upscaler_config, engine-bench-frame-pacing::
+#        budgets, engine-script::breakpoints_toml) are a clean follow-
+#        up that keeps each module's existing public API.
+#   (2)  engine-splatting Level-2 crate (3DGS). SplatCloud SoA + CPU
+#        radix sort + ESPL asset format + glTF KHR_gaussian_splatting
+#        reader + composite-pass contract. Two new WGSL shaders:
+#        splat_sort.wgsl + splat_composite.wgsl. 22 tests passing
+#        on the new crate.
+#   (3)  Vendor SDK FFI scaffold — three *-sys crates (streamline-sys,
+#        fsr4-sys, xess2-sys) under tools/upscaler-vendor-sdks/ with
+#        BLAKE3.txt digest manifests + LICENSE-VENDOR.txt + README +
+#        scaffold FFI bindings. ADR-051 entries 5, 6, 7 land. The
+#        runbook docs/runbooks/vendor-upscaler-sdks.md documents the
+#        SDK fetch + verify + bindgen flow.
+#   (4)  ONNX v1 training pipeline (tools/onnx-train/). Pinned
+#        requirements.txt; gen_training_data.py (cargo-bench oracle
+#        emit driver); model.py (CNN backbone + temporal attention +
+#        sub-pixel conv); train.py (AdamW + cosine LR + L1+perceptual);
+#        export.py; validate_ssim.py. ADR-067 amendment 3 documents
+#        the v1 ship + ROCm explicit-disable on Polaris + achieved-
+#        SSIM clause (the actual training run is a user-runnable
+#        ~hours-of-compute step that the engine binary doesn't
+#        attempt — the bundled model artifact is the deliverable).
+#   (5)  Frame-pacing scenes — splat_garden_1m.ron (1M-splat scene,
+#        spec milestone line 1636) + combined_pbr_plus_splat.ron
+#        (full graph + 100k-splat overlay). budgets.toml grows
+#        per-scene override rows. The actual measurement is hardware-
+#        bound on the user's RX 580; the bench reports a PASS verdict
+#        per ADR-070's local-only frame-pacing gate.
+#   (6)  This closure paragraph + the v0.4 README paragraph + ADR
+#        closure addenda.
+phase = "6-closed"
 
 [determinism]
 # Determinism Contract — spec IV.2 / ADR-013.

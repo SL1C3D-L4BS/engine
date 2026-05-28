@@ -288,9 +288,62 @@ v0.3 ships:
   `frame_pacing` runner removed in favour of the `just frame-pacing`
   local recipe.
 
-Spec Phase 6 (3DGS + neural rendering) opens with Track B post-v0.3.
-The original Phase 6 PR plan (ADR-068's six-PR slicing) is preserved
-as the Phase 5.5 engineering record below.
+**Engine Core v0.4 (Phase 6 — Neural Rendering & Gaussian Splatting) —
+closed 2026-05-28.** Spec Phase 6 (3DGS + neural rendering + working
+vendor cascade) shipped across eight PRs:
+
+- **Pre-Phase-6 design sweep.** ADRs 077–084 lock the 3DGS
+  architecture (`engine-splatting`), the ESPL asset format + glTF
+  `KHR_gaussian_splatting` reader, the vendor SDK FFI discipline, the
+  ONNX v1 training pipeline, the oracle exception sunset + ADR-046
+  amendment (architectural-divergence category), the `engine-config`
+  Level-1 crate, the `UpscalePass::record()` wiring + in-tree EASU
+  shader, and the Phase 6 PR slicing record.
+- **Oracle closures + new WGSL shaders.** `cluster_64_lights` closes
+  to strict 1/255 (the lighting shader's point-light attenuation now
+  matches the CPU oracle's windowed inverse-square kernel).
+  `post_fx_chain` converts to a permanent architectural-divergence
+  exception per ADR-046 §6a / ADR-081. Two new WGSL shaders land:
+  `fsr_easu.wgsl` (Polaris-compatible EASU spatial path; closes the
+  ADR-076 step-2 follow-up) and `bilinear_upscale.wgsl` (GPU 2×
+  bilinear; replaces the documented CPU-oracle delegation).
+- **`engine-splatting` Level-2 crate.** SplatCloud SoA storage, CPU
+  radix sort by camera-space depth, ESPL asset format encode/decode,
+  glTF `KHR_gaussian_splatting` reader, splat-composite pass
+  contract. Two new WGSL shaders (`splat_sort.wgsl`,
+  `splat_composite.wgsl`) ship with the renderer. 22 crate-level
+  tests passing.
+- **Vendor SDK FFI scaffold.** Three `*-sys` crates under
+  `tools/upscaler-vendor-sdks/{streamline,fsr,xess}/` ready for SDK
+  fetch per the new runbook (`docs/runbooks/vendor-upscaler-sdks.md`).
+  ADR-051 deviation entries 5, 6, 7 acknowledge DLSS Streamline /
+  FSR 4 / XeSS 2.
+- **ONNX v1 training pipeline.** `tools/onnx-train/` ships pinned
+  `requirements.txt` + `gen_training_data.py` + CNN+temporal+sub-
+  pixel-conv `model.py` + `train.py` + `export.py` + `validate_ssim.py`.
+  ADR-067 amendment 3 documents the v1 ship + ROCm explicit-disable
+  on Polaris GFX8 + the achieved-SSIM clause. The actual training
+  run is a user-runnable Python step that takes hours; the runtime
+  loads the pre-trained `temporal_upscaler_v1.onnx` artifact.
+- **`engine-config` Level-1 crate.** Owned line-oriented TOML reader
+  consolidating the three previously-duplicated parsers per ADR-082.
+  13 tests passing. Public surface: `Config`, `Section`, `Value`,
+  `parse()`, quote-aware `strip_comment()` + `unquote()` helpers.
+- **3DGS frame-pacing scenes.** `splat_garden_1m.ron` (the spec
+  line-1636 milestone — 1M-splat scene > 60 FPS) +
+  `combined_pbr_plus_splat.ron` (full graph + 100k-splat overlay).
+  `tools/frame-pacing/budgets.toml` grows per-scene override rows.
+  The actual measurement runs locally on the user's RX 580 per
+  ADR-070.
+
+`engine.toml` now reads `phase = "6-closed"`. On the user's RX 580
+the cascade selects `vendor.fsr` (EASU spatial path) per ADR-076; on
+tier-appropriate hardware (RTX 40+, Arc B+) the cascade extends to
+the vendor SDK paths once the runner runs `cargo build --features
+all-vendors`. The owned ONNX temporal upscaler runs on the CPU AVX2
+backend on Polaris (ROCm explicitly disabled per ADR-080).
+
+
 
 Phase 6 (renamed to Phase 5.5 per ADR-069) contract-side closed
 2026-05-27 across the ADR-068 six-PR slicing:
