@@ -272,6 +272,7 @@ impl ParityHarness {
             RID_LIGHTING_FRAME_UBO,
             RID_CLUSTER_UBO,
             RID_LIGHT_INDICES_SSBO,
+            RID_CSM_UBO,
             RID_SHADOW_SAMPLER,
         ));
         g.add_pass(TaaPass::new(

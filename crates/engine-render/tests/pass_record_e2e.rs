@@ -282,6 +282,18 @@ fn lighting_accumulation_executes_via_resolver() {
             },
         ),
     );
+    // CsmUniforms: 4 × mat4x4 + vec4 + 3 × f32 (std140-padded) = 384.
+    pool.register_buffer(
+        ResourceId(25),
+        Buffer::new(
+            &device,
+            &BufferDesc {
+                label: "smoke.csm_ubo",
+                size: 384,
+                usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            },
+        ),
+    );
 
     // Shadow comparison sampler (reverse-Z PCF).
     pool.register_sampler(
@@ -304,6 +316,7 @@ fn lighting_accumulation_executes_via_resolver() {
         ResourceId(20), // frame_uniforms
         ResourceId(21), // cluster_uniforms
         ResourceId(24), // light_indices
+        ResourceId(25), // csm_uniforms (Phase 6 PR 1b, ADR-081 §1)
         ResourceId(30), // shadow_sampler
     ));
     graph

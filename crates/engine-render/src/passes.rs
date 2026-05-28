@@ -1066,6 +1066,10 @@ pub struct LightingAccumulationPass {
     pub cluster_uniforms: ResourceId,
     /// Light-indices SSBO (`@group(1) @binding(3)`).
     pub light_indices: ResourceId,
+    /// CSM uniforms UBO (`@group(1) @binding(4)`). Phase 6 PR 1b
+    /// (ADR-040 + ADR-081 §1) — shared with [`CsmShadowPass`] so the
+    /// fill and sample passes use bit-identical cascade matrices.
+    pub csm_uniforms: ResourceId,
     /// Shadow comparison sampler (`@group(2) @binding(5)`).
     pub shadow_sampler: ResourceId,
     pipeline: Option<RenderPipeline>,
@@ -1086,6 +1090,7 @@ impl LightingAccumulationPass {
         frame_uniforms: ResourceId,
         cluster_uniforms: ResourceId,
         light_indices: ResourceId,
+        csm_uniforms: ResourceId,
         shadow_sampler: ResourceId,
     ) -> Self {
         Self {
@@ -1100,6 +1105,7 @@ impl LightingAccumulationPass {
             frame_uniforms,
             cluster_uniforms,
             light_indices,
+            csm_uniforms,
             shadow_sampler,
             pipeline: None,
         }
@@ -1155,6 +1161,9 @@ impl Pass for LightingAccumulationPass {
             return;
         };
         let Some(indices) = resources.resolve_buffer(self.light_indices) else {
+            return;
+        };
+        let Some(csm_u) = resources.resolve_buffer(self.csm_uniforms) else {
             return;
         };
         let Some(albedo) = resources.resolve_view(self.gbuffer_albedo_roughness) else {
@@ -1213,6 +1222,10 @@ impl Pass for LightingAccumulationPass {
                     BindGroupEntry {
                         binding: 3,
                         resource: BindingResource::Buffer(indices),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Buffer(csm_u),
                     },
                 ],
             },
@@ -2363,6 +2376,7 @@ mod tests {
             frame_ubo,
             cluster_ubo,
             light_indices_ssbo,
+            csm_ubo,
             shadow_sampler,
         ));
         let n = g.compile().expect("graph compiles");
@@ -2488,6 +2502,7 @@ mod tests {
             frame_ubo,
             cluster_ubo,
             light_indices_ssbo,
+            csm_ubo,
             shadow_sampler,
         ));
         g.add_pass(TaaPass::new(
@@ -2622,6 +2637,7 @@ mod tests {
             frame_ubo,
             cluster_ubo,
             light_indices_ssbo,
+            csm_ubo,
             shadow_sampler,
         ));
         g.add_pass(TaaPass::new(
