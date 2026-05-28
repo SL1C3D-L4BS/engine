@@ -169,10 +169,7 @@ impl SplatCloudBuilder {
     }
 
     /// Attach (or replace) the SH coefficients array.
-    pub fn spherical_harmonics(
-        mut self,
-        sh: Vec<[f32; SH_COEFFS_PER_CHANNEL * 3]>,
-    ) -> Self {
+    pub fn spherical_harmonics(mut self, sh: Vec<[f32; SH_COEFFS_PER_CHANNEL * 3]>) -> Self {
         self.sh = Some(sh);
         self
     }

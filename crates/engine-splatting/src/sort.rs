@@ -150,9 +150,7 @@ mod tests {
     fn deterministic_across_runs() {
         // Same input → same output, across multiple invocations
         // (no worker-count-dependent results).
-        let positions: Vec<Vec3> = (0..64)
-            .map(|i| Vec3::new(0.0, 0.0, -(i as f32)))
-            .collect();
+        let positions: Vec<Vec3> = (0..64).map(|i| Vec3::new(0.0, 0.0, -(i as f32))).collect();
         let view = Mat4::IDENTITY;
         let a = cpu::radix_sort_by_depth(&positions, view);
         let b = cpu::radix_sort_by_depth(&positions, view);

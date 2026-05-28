@@ -265,11 +265,7 @@ mod tests {
     fn splat_composite_shader_has_billboard_quad_and_sh() {
         assert_contains(SPLAT_COMPOSITE_WGSL, "@vertex", "splat_composite.wgsl");
         assert_contains(SPLAT_COMPOSITE_WGSL, "@fragment", "splat_composite.wgsl");
-        assert_contains(
-            SPLAT_COMPOSITE_WGSL,
-            "evaluate_sh",
-            "splat_composite.wgsl",
-        );
+        assert_contains(SPLAT_COMPOSITE_WGSL, "evaluate_sh", "splat_composite.wgsl");
         assert_contains(SPLAT_COMPOSITE_WGSL, "QUAD_VERTS", "splat_composite.wgsl");
     }
 

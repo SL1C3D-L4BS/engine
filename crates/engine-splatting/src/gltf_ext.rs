@@ -177,11 +177,13 @@ pub fn read(attrs: GltfAttributes) -> Result<SplatCloud, GltfError> {
         builder
     };
 
-    builder.build().map_err(|_| GltfError::AttributeLengthMismatch {
-        attribute: "internal",
-        expected: 0,
-        actual: 0,
-    })
+    builder
+        .build()
+        .map_err(|_| GltfError::AttributeLengthMismatch {
+            attribute: "internal",
+            expected: 0,
+            actual: 0,
+        })
 }
 
 #[cfg(test)]
