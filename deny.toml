@@ -22,6 +22,60 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 
+# Phase 4 own-the-substrate (ADR-034 — engine-script). The sli compiler
+# front-end is hand-written: lexer + Pratt parser + bottom-up checker +
+# SSA IR. No vendored interpreter, JIT, LLVM binding, or parser-
+# combinator/generator crate is permitted as a dependency. Enforced at
+# the dependency level (not the source level) so common English words
+# like "combine" / "nom" / "pest" used as local-variable names don't
+# false-positive — the regex grep guard in `.github/workflows/ci.yml`
+# was migrated here on 2026-05-28 after `\bcombine\b` false-positived
+# on `let combine = ...` in `crates/engine-script/tests/
+# aggregate_ops_codegen.rs`.
+#
+# The crate list mirrors ADR-007's deferral set (the spec rejection
+# rationale is bound to these names):
+# - Lua hosts: rlua / mlua
+# - WASM hosts: wasmtime / wasmer
+# - JIT / codegen libraries: cranelift / inkwell
+# - Parser generators / combinators: lalrpop / pest / nom / combine /
+#   chumsky
+#
+# Phase 4 PR 3 (ADR-036): owned debugger wire protocol. No vendored
+# serialization or RPC host. `serde` itself is allowed because the
+# wgpu transitive dep graph requires it (Phase 5+); only the
+# alternative codec / RPC crates are banned here.
+#
+# Phase 4 PR 4 (ADR-037): Slang via slangc subprocess only. No HLSL /
+# Slang parser, no shader compiler internals. `naga` is allowed
+# because it's the wgpu transitive front-end (Phase 5+); the rest of
+# the shader-compiler family is banned here.
+deny = [
+    # ADR-034 — engine-script owned VM
+    { name = "rlua" },
+    { name = "mlua" },
+    { name = "wasmtime" },
+    { name = "wasmer" },
+    { name = "cranelift" },
+    { name = "inkwell" },
+    { name = "lalrpop" },
+    { name = "pest" },
+    { name = "nom" },
+    { name = "combine" },
+    { name = "chumsky" },
+    # ADR-036 — owned debugger wire protocol
+    { name = "bincode" },
+    { name = "prost" },
+    { name = "protobuf" },
+    { name = "rmp" },
+    # ADR-037 — Slang via slangc subprocess only
+    { name = "shaderc" },
+    { name = "shaderc-rs" },
+    { name = "spirv-tools" },
+    { name = "spirv-cross" },
+    { name = "glslang" },
+]
+
 [advisories]
 yanked = "deny"
 

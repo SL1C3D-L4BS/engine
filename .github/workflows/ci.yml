@@ -27,7 +27,7 @@ jobs:
   gate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tooling
         run: sudo apt-get update && sudo apt-get install -y mold clang
@@ -176,68 +176,23 @@ jobs:
             exit 1
           fi
 
-      - name: Guard against vendored interpreters / parser generators in engine-script (ADR-034)
-        run: |
-          # Phase 4 own-the-substrate: the sli compiler front-end is hand-
-          # written (lexer + Pratt parser + bottom-up checker + SSA IR).
-          # No parser generator, vendored interpreter, JIT, or LLVM
-          # binding is permitted anywhere under `crates/engine-script/`.
-          # The rejection list covers the families spec ADR-007 closes
-          # off: scripting languages (rlua / mlua), WASM hosts
-          # (wasmtime / wasmer), JITs / codegen libraries (cranelift /
-          # inkwell), and parser-combinator / generator crates (lalrpop /
-          # pest / nom / combine / chumsky).
-          # The doc-comment strip mirrors ADR-028 / ADR-029 — rustdoc
-          # cross-references like `[lalrpop]` should not trip the guard.
-          hits=$(grep -rnE '\brlua\b|\bmlua\b|\bwasmtime\b|\bwasmer\b|\bcranelift\b|\binkwell\b|\blalrpop\b|\bpest\b|\bnom\b|\bcombine\b|\bchumsky\b' crates/engine-script \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
-              | grep -vE '\.md:' || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error::Owned VM only — see ADR-034 (no rlua/mlua/wasmtime/wasmer/cranelift/inkwell/lalrpop/pest/nom/combine/chumsky in engine-script)"
-            exit 1
-          fi
-
-      - name: Guard against vendored serialization / RPC crates in debugger protocol (ADR-036)
-        run: |
-          # Phase 4 PR 3 ships an owned binary wire protocol for the
-          # script debugger — explicitly NOT Microsoft DAP JSON. No
-          # serde, no serde_json, no bincode, no protobuf / rmp host
-          # may link under `crates/engine-script/`. The encoder lives
-          # in `debug_proto.rs` and owns its little-endian operand
-          # encoding; the round-trip oracle in
-          # `tests/debug_protocol.rs` pins every variant.
-          hits=$(grep -rnE '\bserde\b|\bserde_json\b|\bserde_derive\b|\bbincode\b|\bprost\b|\bprotobuf\b|\brmp\b' crates/engine-script \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
-              | grep -vE '\.md:' || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error::Owned debugger wire protocol — see ADR-036 (no serde/serde_json/bincode/prost/protobuf/rmp in engine-script)"
-            exit 1
-          fi
-
-      - name: Guard against owned mini-Slang front-end (ADR-037)
-        run: |
-          # Phase 4 PR 4: spec ADR-003 names Slang as the source
-          # language, NOT as something the engine re-implements. The
-          # toolchain wraps the official `slangc` binary as a
-          # sandboxed subprocess. No HLSL / Slang parser, no shader
-          # compiler internals link under `tools/engine-shader/` —
-          # if you find yourself wanting one, write an ADR first.
-          # The list mirrors ADR-003's deferral set: naga (wgpu's
-          # internal compiler), shaderc/shaderc-rs (Google's
-          # libshaderc wrapper), spirv-tools, spirv-cross, glslang.
-          hits=$(grep -rnE '\bnaga\b|\bshaderc\b|\bshaderc_rs\b|\bspirv_tools\b|\bspirv_cross\b|\bglslang\b' tools/engine-shader \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
-              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*!' \
-              | grep -vE '\.md:' || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error::Slang via slangc subprocess only — see ADR-037 (no naga/shaderc/spirv-tools/spirv-cross/glslang in tools/engine-shader)"
-            exit 1
-          fi
+      # ADR-034 owned-VM enforcement migrated to `deny.toml [bans] deny`
+      # 2026-05-28. The previous grep-on-source guard regex
+      # `\brlua\b|\bmlua\b|\bwasmtime\b|\bwasmer\b|\bcranelift\b|\binkwell\b|\blalrpop\b|\bpest\b|\bnom\b|\bcombine\b|\bchumsky\b`
+      # false-positived on common English / programming words used as
+      # local-variable names (the trigger was `let combine = ...` in
+      # `crates/engine-script/tests/aggregate_ops_codegen.rs`). The
+      # correct mechanism is cargo-deny's dependency-graph ban list —
+      # it matches actual Cargo manifest entries by exact crate name,
+      # not arbitrary substrings in source code. The `CI gate` step
+      # below runs `just ci`, which invokes `cargo deny check`. See
+      # `deny.toml` for the named-crate rejection list.
+      #
+      # ADR-036 + ADR-037 vendored-crate guards likewise migrated to
+      # `deny.toml`: bincode / prost / protobuf / rmp (debugger wire
+      # protocol), shaderc / shaderc-rs / spirv-tools / spirv-cross /
+      # glslang (Slang front-end). `serde` and `naga` are NOT banned
+      # because the wgpu transitive dep graph requires them.
 
       - name: Guard against vendored line editors in REPL (ADR-036)
         run: |
@@ -423,7 +378,7 @@ jobs:
     env:
       RUSTFLAGS: "-C target-feature=-fma"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tooling
         run: sudo apt-get update && sudo apt-get install -y mold clang
