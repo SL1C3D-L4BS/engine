@@ -210,10 +210,8 @@ fn parse_value(raw: &str, line: usize) -> Result<Value, ParseError> {
     }
     // Float if value contains '.' or 'e'/'E', otherwise integer.
     let looks_float = raw.contains('.') || raw.contains('e') || raw.contains('E');
-    if !looks_float {
-        if let Ok(i) = raw.parse::<i64>() {
-            return Ok(Value::Integer(i));
-        }
+    if !looks_float && let Ok(i) = raw.parse::<i64>() {
+        return Ok(Value::Integer(i));
     }
     if let Ok(f) = raw.parse::<f64>() {
         return Ok(Value::Float(f));
@@ -488,12 +486,12 @@ mod tests {
     }
 }
 
-/// Conditionally enable std-backed convenience APIs (file reads).
-/// Default-on for the workspace; `default-features = false` consumers
-/// keep the crate `no_std + alloc`.
 #[cfg(feature = "std")]
 pub mod fs {
     //! Filesystem-backed conveniences (std only).
+    //!
+    //! Default-on for the workspace; `default-features = false` consumers
+    //! keep the crate `no_std + alloc`.
     use super::{Config, ParseError, parse};
     use std::io;
     use std::path::Path;

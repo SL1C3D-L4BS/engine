@@ -99,7 +99,7 @@ pub fn read(attrs: GltfAttributes) -> Result<SplatCloud, GltfError> {
     if attrs.revision != KHR_GAUSSIAN_SPLATTING_DRAFT_REV {
         return Err(GltfError::UnsupportedRevision(attrs.revision));
     }
-    if attrs.positions.len() % 3 != 0 {
+    if !attrs.positions.len().is_multiple_of(3) {
         return Err(GltfError::AttributeLengthMismatch {
             attribute: attribute::POSITION,
             expected: 3 * (attrs.positions.len() / 3),

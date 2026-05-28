@@ -48,10 +48,10 @@ impl SplatCloud {
         {
             return Err(CloudError::AttributeLengthMismatch);
         }
-        if let Some(sh) = &sh {
-            if sh.len() != count {
-                return Err(CloudError::AttributeLengthMismatch);
-            }
+        if let Some(sh) = &sh
+            && sh.len() != count
+        {
+            return Err(CloudError::AttributeLengthMismatch);
         }
         Ok(Self {
             position,
