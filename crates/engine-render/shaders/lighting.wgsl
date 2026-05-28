@@ -130,6 +130,15 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let albedo_rough = textureLoad(gbuf_albedo_rough, coord, 0);
     let normal_metal = textureLoad(gbuf_normal_metal, coord, 0);
     let depth = textureLoad(depth_buffer, coord, 0);
+    // Reference declared bindings that PR 4.5 will fully integrate
+    // (motion vector for TAA disocclusion refinement; shadow PCF
+    // lookup against the CSM atlas). Naga's reflection strips
+    // declared-but-unused bindings from the auto-derived layout, so
+    // touching them here keeps the layout in sync with the
+    // [`LightingAccumulationPass`] bind-group descriptor that the
+    // ADR-075 §1 record() body constructs.
+    let _motion = textureLoad(gbuf_motion_depth, coord, 0);
+    let _shadow = textureSampleCompareLevel(shadow_atlas, shadow_sampler, vec2<f32>(0.5), 0.5);
     if (depth <= 0.0) {
         // Reverse-Z: 0.0 is far / sky. Don't shade.
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);

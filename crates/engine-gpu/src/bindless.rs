@@ -541,6 +541,7 @@ mod tests {
             min_filter: FilterMode::Linear,
             mipmap_filter: FilterMode::Linear,
             anisotropy: 4,
+            comparison: false,
         };
         assert_eq!(heap.intern_sampler(third), Err(HeapFull));
         assert_eq!(heap.stats().overflow_events, 1);

@@ -64,6 +64,15 @@ pub struct SamplerDesc {
     /// Maximum anisotropy. 1 = isotropic. 4 / 8 / 16 are the typical
     /// per-tier upgrades.
     pub anisotropy: u16,
+    /// Enable comparison sampling. When `true`, the sampler is a
+    /// PCF / shadow-comparison sampler (wgpu sets the
+    /// [`wgpu::SamplerDescriptor::compare`] field, surfacing the
+    /// `sampler_comparison` shader binding type). Reverse-Z passes
+    /// use the `Greater` comparator the engine wires in
+    /// [`Sampler::new`]; the descriptor's bool surface keeps the
+    /// hashable structure of `SamplerDesc` minimal while still
+    /// expressing the binding-type difference.
+    pub comparison: bool,
 }
 
 impl SamplerDesc {
@@ -78,6 +87,7 @@ impl SamplerDesc {
             min_filter: FilterMode::Linear,
             mipmap_filter: FilterMode::Linear,
             anisotropy: 1,
+            comparison: false,
         }
     }
 
@@ -91,6 +101,23 @@ impl SamplerDesc {
             min_filter: FilterMode::Nearest,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
+            comparison: false,
+        }
+    }
+
+    /// Shadow PCF comparison sampler (clamp address, linear filter,
+    /// reverse-Z `Greater` compare). Used by the CSM atlas sampler in
+    /// [`crate::LightingAccumulationPass`] (ADR-040).
+    pub const fn shadow_pcf() -> Self {
+        Self {
+            address_u: AddressMode::ClampToEdge,
+            address_v: AddressMode::ClampToEdge,
+            address_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
+            comparison: true,
         }
     }
 }
@@ -119,6 +146,15 @@ impl Sampler {
             FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
             FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
         };
+        // Reverse-Z (ADR-040 §3) shadow passes use Greater; the
+        // SamplerDesc.comparison bool elides the compare-function
+        // surface from the hashable descriptor (every shadow sampler
+        // in the engine is reverse-Z).
+        let compare = if desc.comparison {
+            Some(wgpu::CompareFunction::Greater)
+        } else {
+            None
+        };
         let raw = device.raw().create_sampler(&wgpu::SamplerDescriptor {
             label: None,
             address_mode_u: desc.address_u.to_wgpu(),
@@ -129,7 +165,7 @@ impl Sampler {
             mipmap_filter: mipmap,
             lod_min_clamp: 0.0,
             lod_max_clamp: 32.0,
-            compare: None,
+            compare,
             anisotropy_clamp: desc.anisotropy.max(1),
             border_color: None,
         });

@@ -50,9 +50,10 @@
 //! resource pool doesn't yet resolve.
 
 use engine_gpu::{
-    BindGroup, BindGroupDesc, BindGroupEntry, BindingResource, ColorTargetState, ComputePipeline,
-    DepthStencilState, Device, RenderPipeline, VertexAttribute, VertexBufferLayout, VertexFormat,
-    VertexStepMode,
+    BindGroup, BindGroupDesc, BindGroupEntry, BindingResource, Color, ColorTargetState,
+    ComputePipeline, DepthLoadOp, DepthStencilState, Device, LoadOp, RenderPassColorAttachment,
+    RenderPassDepthAttachment, RenderPassDesc, RenderPipeline, VertexAttribute, VertexBufferLayout,
+    VertexFormat, VertexStepMode,
 };
 use engine_shader::Stage;
 
@@ -475,17 +476,24 @@ impl Pass for CullPass {
 pub struct CsmShadowPass {
     /// Per-shadow-caster instance queue.
     pub shadow_casters: ResourceId,
-    /// 4096² D32F shadow atlas.
+    /// 4096² D32F shadow atlas (depth attachment).
     pub shadow_atlas: ResourceId,
+    /// CSM uniforms UBO (`@group(1) @binding(0)`).
+    pub csm_uniforms: ResourceId,
     pipeline: Option<RenderPipeline>,
 }
 
 impl CsmShadowPass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(shadow_casters: ResourceId, shadow_atlas: ResourceId) -> Self {
+    pub fn new(
+        shadow_casters: ResourceId,
+        shadow_atlas: ResourceId,
+        csm_uniforms: ResourceId,
+    ) -> Self {
         Self {
             shadow_casters,
             shadow_atlas,
+            csm_uniforms,
             pipeline: None,
         }
     }
@@ -508,11 +516,53 @@ impl Pass for CsmShadowPass {
         self.pipeline = Some(build_csm_shadow_pipeline(device)?);
         Ok(())
     }
-    fn record(&mut self, _ctx: &mut PassContext) {
-        // PR 7.5: the pipeline is installed once at startup. PR 8 wires
-        // `begin_render_pass` against each cascade's atlas quadrant
-        // (4 sub-passes per ADR-040 §3 reverse-Z) plus shadow-caster
-        // draws.
+    fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template, depth-only render pass.
+        //
+        // The pass opens a depth-only render pass against the shadow
+        // atlas and clears the depth attachment (reverse-Z convention
+        // clears to 0.0 at the far plane). Per-draw push constants +
+        // vertex/index/indirect binding for the
+        // `ShadowCasters` queue land in A.2d — they require:
+        // (a) Per-draw push constants flow (the WGSL `var<immediate>`
+        //     declaration), and
+        // (b) Indirect-draw consumption pattern (one `draw_indexed_indirect`
+        //     per surviving caster after culling, or a WGSL refactor
+        //     to read model transforms from a per-instance SSBO).
+        //
+        // The clear is meaningful work: subsequent passes that sample
+        // the shadow atlas without a writer would otherwise see
+        // undefined depth. Step 5 lays the pass scope; A.2d fills in
+        // the draws.
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(_csm_u) = resources.resolve_buffer(self.csm_uniforms) else {
+            return;
+        };
+        let Some(atlas) = resources.resolve_view(self.shadow_atlas) else {
+            return;
+        };
+        // Depth-only render pass; reverse-Z clear at 0.0 (far plane).
+        let mut rpass = gpu.encoder.begin_render_pass_desc(&RenderPassDesc {
+            label: "shadow.renderpass",
+            color_attachments: &[],
+            depth: Some(RenderPassDepthAttachment {
+                view: &atlas,
+                load: DepthLoadOp::Clear(0.0),
+                store: true,
+            }),
+        });
+        rpass.set_pipeline(pipeline);
+        // A.2d: per-cascade viewport + per-draw push constants +
+        // `draw_indexed_indirect` against the cull pass's draw-arg
+        // buffer. Until then the pass clears the atlas and ends.
     }
 }
 
@@ -653,7 +703,7 @@ impl Pass for ClusterLightPass {
 /// depth attachment.
 #[derive(Debug)]
 pub struct GBufferPass {
-    /// Cull-pass output.
+    /// Cull-pass output (indirect-draw arg buffer).
     pub indirect_draws: ResourceId,
     /// G-buffer attachment: albedo (RGB) + roughness (A).
     pub gbuffer_albedo_roughness: ResourceId,
@@ -663,6 +713,8 @@ pub struct GBufferPass {
     pub gbuffer_motion_depth: ResourceId,
     /// Hardware D32F depth (reverse-Z).
     pub depth: ResourceId,
+    /// Per-frame UBO (`@group(0) @binding(0)`).
+    pub frame_uniforms: ResourceId,
     pipeline: Option<RenderPipeline>,
 }
 
@@ -674,6 +726,7 @@ impl GBufferPass {
         gbuffer_normal_metallic: ResourceId,
         gbuffer_motion_depth: ResourceId,
         depth: ResourceId,
+        frame_uniforms: ResourceId,
     ) -> Self {
         Self {
             indirect_draws,
@@ -681,6 +734,7 @@ impl GBufferPass {
             gbuffer_normal_metallic,
             gbuffer_motion_depth,
             depth,
+            frame_uniforms,
             pipeline: None,
         }
     }
@@ -706,10 +760,69 @@ impl Pass for GBufferPass {
         self.pipeline = Some(build_gbuffer_pipeline(device)?);
         Ok(())
     }
-    fn record(&mut self, _ctx: &mut PassContext) {
-        // PR 7.5: pipeline installed once at startup. PR 8 wires the
-        // 3-MRT `begin_render_pass` + `draw_indexed_indirect` against
-        // the cull-pass-produced `IndirectDrawBuffer`.
+    fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template, MRT + depth render pass.
+        //
+        // Opens the 3-MRT + depth render pass against the G-buffer
+        // attachments, clears them, sets the pipeline. Per-draw push
+        // constants + vertex/index/indirect-draw consumption land in
+        // A.2d (same pattern as CsmShadowPass — both consume the
+        // CullPass's indirect-draw buffer).
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(_frame) = resources.resolve_buffer(self.frame_uniforms) else {
+            return;
+        };
+        let Some(albedo) = resources.resolve_view(self.gbuffer_albedo_roughness) else {
+            return;
+        };
+        let Some(normal) = resources.resolve_view(self.gbuffer_normal_metallic) else {
+            return;
+        };
+        let Some(motion) = resources.resolve_view(self.gbuffer_motion_depth) else {
+            return;
+        };
+        let Some(depth) = resources.resolve_view(self.depth) else {
+            return;
+        };
+        let color_attachments = [
+            RenderPassColorAttachment {
+                view: &albedo,
+                load: LoadOp::Clear(Color::BLACK),
+                store: true,
+            },
+            RenderPassColorAttachment {
+                view: &normal,
+                load: LoadOp::Clear(Color::BLACK),
+                store: true,
+            },
+            RenderPassColorAttachment {
+                view: &motion,
+                load: LoadOp::Clear(Color::BLACK),
+                store: true,
+            },
+        ];
+        let mut rpass = gpu.encoder.begin_render_pass_desc(&RenderPassDesc {
+            label: "draw.opaque.renderpass",
+            color_attachments: &color_attachments,
+            depth: Some(RenderPassDepthAttachment {
+                view: &depth,
+                load: DepthLoadOp::Clear(0.0),
+                store: true,
+            }),
+        });
+        rpass.set_pipeline(pipeline);
+        // A.2d: per-frame UBO bind + per-draw push constants +
+        // `set_vertex_buffer` + `set_index_buffer_u32` + per-instance
+        // `draw_indexed_indirect` against the cull pass's draw-arg
+        // buffer. Until then the pass clears the MRT attachments.
     }
 }
 
@@ -722,22 +835,30 @@ impl Pass for GBufferPass {
 /// per pixel; writes to `LitColor`.
 #[derive(Debug)]
 pub struct LightingAccumulationPass {
-    /// G-buffer albedo+roughness attachment.
+    /// G-buffer albedo+roughness (`@group(2) @binding(0)`).
     pub gbuffer_albedo_roughness: ResourceId,
-    /// G-buffer normal+metallic attachment.
+    /// G-buffer normal+metallic (`@group(2) @binding(1)`).
     pub gbuffer_normal_metallic: ResourceId,
-    /// G-buffer motion+view-z attachment.
+    /// G-buffer motion+view-z (`@group(2) @binding(2)`).
     pub gbuffer_motion_depth: ResourceId,
-    /// Hardware depth (read-only).
+    /// Hardware depth (`@group(2) @binding(3)`).
     pub depth: ResourceId,
-    /// Cluster grid (ADR-043).
+    /// Cluster grid (`@group(1) @binding(2)`).
     pub cluster_cells: ResourceId,
-    /// Per-light SSBO (ADR-043 §3).
+    /// Per-light SSBO (`@group(1) @binding(1)`).
     pub lights: ResourceId,
-    /// Shadow atlas (ADR-040).
+    /// Shadow atlas (`@group(2) @binding(4)`).
     pub shadow_atlas: ResourceId,
-    /// HDR linear-space output.
+    /// HDR linear-space output (color attachment).
     pub lit_color: ResourceId,
+    /// Full-screen frame UBO (`@group(0) @binding(0)`).
+    pub frame_uniforms: ResourceId,
+    /// Cluster UBO (`@group(1) @binding(0)`).
+    pub cluster_uniforms: ResourceId,
+    /// Light-indices SSBO (`@group(1) @binding(3)`).
+    pub light_indices: ResourceId,
+    /// Shadow comparison sampler (`@group(2) @binding(5)`).
+    pub shadow_sampler: ResourceId,
     pipeline: Option<RenderPipeline>,
 }
 
@@ -753,6 +874,10 @@ impl LightingAccumulationPass {
         lights: ResourceId,
         shadow_atlas: ResourceId,
         lit_color: ResourceId,
+        frame_uniforms: ResourceId,
+        cluster_uniforms: ResourceId,
+        light_indices: ResourceId,
+        shadow_sampler: ResourceId,
     ) -> Self {
         Self {
             gbuffer_albedo_roughness,
@@ -763,6 +888,10 @@ impl LightingAccumulationPass {
             lights,
             shadow_atlas,
             lit_color,
+            frame_uniforms,
+            cluster_uniforms,
+            light_indices,
+            shadow_sampler,
             pipeline: None,
         }
     }
@@ -791,12 +920,146 @@ impl Pass for LightingAccumulationPass {
         self.pipeline = Some(build_lighting_pipeline(device)?);
         Ok(())
     }
-    fn record(&mut self, _ctx: &mut PassContext) {
-        // PR 7.5: full-screen lighting pipeline (3-vertex triangle, no
-        // vertex buffers — full-screen via `@builtin(vertex_index)`)
-        // installed at startup. PR 8 wires `begin_render_pass` against
-        // the `LitColor` attachment + the Cook-Torrance bind-group
-        // reading G-buffer + cluster + shadow.
+    fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template. Full-screen draw (no vertex
+        // buffer); the WGSL `vs_main` generates a 3-vertex triangle
+        // via `@builtin(vertex_index)`.
+        let Some(gpu) = ctx.gpu.as_mut() else {
+            return;
+        };
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return;
+        };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(frame) = resources.resolve_buffer(self.frame_uniforms) else {
+            return;
+        };
+        let Some(cluster_u) = resources.resolve_buffer(self.cluster_uniforms) else {
+            return;
+        };
+        let Some(lights) = resources.resolve_buffer(self.lights) else {
+            return;
+        };
+        let Some(cells) = resources.resolve_buffer(self.cluster_cells) else {
+            return;
+        };
+        let Some(indices) = resources.resolve_buffer(self.light_indices) else {
+            return;
+        };
+        let Some(albedo) = resources.resolve_view(self.gbuffer_albedo_roughness) else {
+            return;
+        };
+        let Some(normal) = resources.resolve_view(self.gbuffer_normal_metallic) else {
+            return;
+        };
+        let Some(motion) = resources.resolve_view(self.gbuffer_motion_depth) else {
+            return;
+        };
+        let Some(depth) = resources.resolve_view(self.depth) else {
+            return;
+        };
+        let Some(shadow) = resources.resolve_view(self.shadow_atlas) else {
+            return;
+        };
+        let Some(shadow_sampler) = resources.resolve_sampler(self.shadow_sampler) else {
+            return;
+        };
+        let Some(lit) = resources.resolve_view(self.lit_color) else {
+            return;
+        };
+        let layout_frame = pipeline.bind_group_layout(0);
+        let layout_cluster = pipeline.bind_group_layout(1);
+        let layout_tex = pipeline.bind_group_layout(2);
+        let bg_frame = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.2.bindgroup.0",
+                layout: &layout_frame,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(frame),
+                }],
+            },
+        );
+        let bg_cluster = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.2.bindgroup.1",
+                layout: &layout_cluster,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(cluster_u),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Buffer(lights),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Buffer(cells),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::Buffer(indices),
+                    },
+                ],
+            },
+        );
+        let bg_tex = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.2.bindgroup.2",
+                layout: &layout_tex,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&albedo),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&normal),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&motion),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(&depth),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::TextureView(&shadow),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: BindingResource::Sampler(shadow_sampler),
+                    },
+                ],
+            },
+        );
+        // Open the render pass with one color attachment (lit_color),
+        // no depth (the pipeline's depth_stencil is None — full-screen
+        // lighting doesn't write depth).
+        let color_attachments = [RenderPassColorAttachment {
+            view: &lit,
+            load: LoadOp::Clear(Color::BLACK),
+            store: true,
+        }];
+        let mut rpass = gpu.encoder.begin_render_pass_desc(&RenderPassDesc {
+            label: "draw.opaque.2.renderpass",
+            color_attachments: &color_attachments,
+            depth: None,
+        });
+        rpass.set_pipeline(pipeline);
+        rpass.set_bind_group(0, &bg_frame);
+        rpass.set_bind_group(1, &bg_cluster);
+        rpass.set_bind_group(2, &bg_tex);
+        // Full-screen triangle: 3 vertices, 1 instance.
+        rpass.draw(0..3, 0..1);
     }
 }
 
@@ -1635,6 +1898,10 @@ mod tests {
         let cluster_ubo = ResourceId(53);
         let light_indices_ssbo = ResourceId(54);
         let indices_cursor_ssbo = ResourceId(55);
+        // Render-pass auxiliary bindings (A.2c).
+        let csm_ubo = ResourceId(63);
+        let frame_ubo = ResourceId(64);
+        let shadow_sampler = ResourceId(65);
 
         g.add_pass(CullPass::new(
             queue,
@@ -1643,7 +1910,7 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
+        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -1651,7 +1918,9 @@ mod tests {
             light_indices_ssbo,
             indices_cursor_ssbo,
         ));
-        g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
+        g.add_pass(GBufferPass::new(
+            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+        ));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
             gbuf_nm,
@@ -1661,6 +1930,10 @@ mod tests {
             lights,
             shadow_atlas,
             lit,
+            frame_ubo,
+            cluster_ubo,
+            light_indices_ssbo,
+            shadow_sampler,
         ));
         let n = g.compile().expect("graph compiles");
         assert_eq!(n, 5);
@@ -1711,6 +1984,17 @@ mod tests {
         let light_indices_ssbo = ResourceId(54);
         let indices_cursor_ssbo = ResourceId(55);
         let ssao_ubo = ResourceId(56);
+        // Auxiliary IDs for IBL / TAA / Bloom / Tonemap bindings.
+        let ibl_ubo = ResourceId(57);
+        let brdf_sampler = ResourceId(58);
+        let taa_ubo = ResourceId(59);
+        let linear_sampler = ResourceId(60);
+        let bloom_ubo = ResourceId(61);
+        let tonemap_ubo = ResourceId(62);
+        // Render-pass auxiliary bindings (A.2c).
+        let csm_ubo = ResourceId(63);
+        let frame_ubo = ResourceId(64);
+        let shadow_sampler = ResourceId(65);
 
         g.add_pass(CullPass::new(
             queue,
@@ -1719,7 +2003,7 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
+        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -1727,15 +2011,10 @@ mod tests {
             light_indices_ssbo,
             indices_cursor_ssbo,
         ));
-        g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
+        g.add_pass(GBufferPass::new(
+            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+        ));
         g.add_pass(SsaoPass::new(depth, gbuf_nm, ssao, ssao_ubo));
-        // Auxiliary IDs for IBL / TAA / Bloom / Tonemap bindings.
-        let ibl_ubo = ResourceId(57);
-        let brdf_sampler = ResourceId(58);
-        let taa_ubo = ResourceId(59);
-        let linear_sampler = ResourceId(60);
-        let bloom_ubo = ResourceId(61);
-        let tonemap_ubo = ResourceId(62);
         g.add_pass(IblPass::new(
             probes,
             brdf_lut,
@@ -1755,6 +2034,10 @@ mod tests {
             lights,
             shadow_atlas,
             lit,
+            frame_ubo,
+            cluster_ubo,
+            light_indices_ssbo,
+            shadow_sampler,
         ));
         g.add_pass(TaaPass::new(
             lit,
@@ -1829,6 +2112,13 @@ mod tests {
         let cluster_ubo = ResourceId(53);
         let light_indices_ssbo = ResourceId(54);
         let indices_cursor_ssbo = ResourceId(55);
+        let taa_ubo = ResourceId(59);
+        let linear_sampler = ResourceId(60);
+        let bloom_ubo = ResourceId(61);
+        let tonemap_ubo = ResourceId(62);
+        let csm_ubo = ResourceId(63);
+        let frame_ubo = ResourceId(64);
+        let shadow_sampler = ResourceId(65);
 
         g.add_pass(CullPass::new(
             queue,
@@ -1837,7 +2127,7 @@ mod tests {
             meshes_ssbo,
             draw_count_ssbo,
         ));
-        g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
+        g.add_pass(CsmShadowPass::new(casters, shadow_atlas, csm_ubo));
         g.add_pass(ClusterLightPass::new(
             lights,
             cluster_cells,
@@ -1845,7 +2135,9 @@ mod tests {
             light_indices_ssbo,
             indices_cursor_ssbo,
         ));
-        g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
+        g.add_pass(GBufferPass::new(
+            indirect, gbuf_ar, gbuf_nm, gbuf_md, depth, frame_ubo,
+        ));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
             gbuf_nm,
@@ -1855,11 +2147,11 @@ mod tests {
             lights,
             shadow_atlas,
             lit,
+            frame_ubo,
+            cluster_ubo,
+            light_indices_ssbo,
+            shadow_sampler,
         ));
-        let taa_ubo = ResourceId(59);
-        let linear_sampler = ResourceId(60);
-        let bloom_ubo = ResourceId(61);
-        let tonemap_ubo = ResourceId(62);
         g.add_pass(TaaPass::new(
             lit,
             taa_history_prev,
