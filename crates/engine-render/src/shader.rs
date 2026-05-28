@@ -209,12 +209,17 @@ pub fn build_compute_pipeline(
     Ok(ComputePipeline::new(device, &pipeline_desc))
 }
 
-/// Build an empty bind-group layout. PR 3 widens this when the
-/// geometry passes need real bind-group entries; PR 2's helpers ride
-/// on the empty layout so demo / smoke pipelines compile without
-/// requiring a reflection-driven layout extractor.
+/// Build an empty bind-group layout. Useful for demo / smoke pipelines
+/// that need no bindings; real per-pass layouts populate `entries` per
+/// the WGSL `@group/@binding` declarations.
 pub fn empty_bind_group_layout(device: &Device, label: &str) -> engine_gpu::BindGroupLayout {
-    engine_gpu::BindGroupLayout::new(device, &BindGroupLayoutDesc { label })
+    engine_gpu::BindGroupLayout::new(
+        device,
+        &BindGroupLayoutDesc {
+            label,
+            entries: &[],
+        },
+    )
 }
 
 /// Wrap a raw WGSL `&str` (e.g. one of the embedded `crate::shaders::*`

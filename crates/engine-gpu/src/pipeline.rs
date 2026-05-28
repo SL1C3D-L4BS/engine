@@ -1,11 +1,15 @@
-//! Pipeline / shader-module / bind-group layout wrappers.
+//! Pipeline / shader-module / bind-group layout / bind-group wrappers.
 //!
-//! Owned descriptors mirror the wgpu shape closely so PR 3+ render passes
-//! can be authored in a familiar style, but every named identifier is
-//! engine-owned. PR 2 ships the surface; PR 3 lights it up.
+//! Owned descriptors mirror the wgpu shape closely so the Track-A render
+//! passes can be authored in a familiar style, but every named identifier
+//! is engine-owned. Phase 5.5 A.2b extends the surface with [`BindGroup`],
+//! [`BindingResource`], and the [`BindGroupLayoutEntry`] descriptor types
+//! that pass `record()` bodies consume.
 
+use crate::buffer::Buffer;
 use crate::device::Device;
-use crate::texture::TextureFormat;
+use crate::sampler::Sampler;
+use crate::texture::{TextureFormat, TextureView};
 use std::sync::Arc;
 
 /// Shader module descriptor. PR 2 accepts only WGSL source strings — the
@@ -68,8 +72,7 @@ impl ShaderStage {
         (self.0 & other.0) == other.0
     }
 
-    #[allow(dead_code, reason = "consumed by PR 3 bind-group entries")]
-    fn to_wgpu(self) -> wgpu::ShaderStages {
+    pub(crate) fn to_wgpu(self) -> wgpu::ShaderStages {
         let mut s = wgpu::ShaderStages::empty();
         if self.contains(Self::VERTEX) {
             s |= wgpu::ShaderStages::VERTEX;
@@ -91,33 +94,224 @@ impl core::ops::BitOr for ShaderStage {
     }
 }
 
-/// Bind-group layout descriptor. PR 2 ships the minimal surface PR 3 needs.
-#[derive(Clone, Debug, Default)]
+/// One entry in a [`BindGroupLayoutDesc`].
+///
+/// Each entry binds a `(group, binding)` location to a resource kind
+/// (uniform buffer, storage buffer, texture, sampler, etc.) and the
+/// stage(s) it is visible from. A.2b consumers populate this list when
+/// authoring explicit per-pass layouts; the auto-derive path (Phase
+/// 5.5 A.2a default) uses an empty layout list and wgpu introspects
+/// the shader instead.
+#[derive(Clone, Copy, Debug)]
+pub struct BindGroupLayoutEntry {
+    /// Binding index inside this group.
+    pub binding: u32,
+    /// Stage visibility set.
+    pub visibility: ShaderStage,
+    /// Resource kind + access mode.
+    pub ty: BindingType,
+}
+
+/// Resource kind + access mode encoded in a [`BindGroupLayoutEntry`].
+#[derive(Clone, Copy, Debug)]
+pub enum BindingType {
+    /// Uniform buffer (read-only).
+    UniformBuffer,
+    /// Storage buffer (SSBO), read-only on the shader side.
+    StorageBufferRead,
+    /// Storage buffer (SSBO), read-write on the shader side.
+    StorageBufferReadWrite,
+    /// Filterable 2D color texture.
+    SampledTexture2d,
+    /// Depth-only 2D texture (for shadow / depth sampling).
+    SampledTextureDepth2d,
+    /// Write-only storage texture (compute-shader image writes).
+    StorageTexture2dWrite {
+        /// Storage texel format the shader writes.
+        format: TextureFormat,
+    },
+    /// Filtering sampler.
+    Sampler,
+    /// Comparison sampler (for hardware PCF shadow lookup).
+    SamplerComparison,
+}
+
+impl BindingType {
+    fn to_wgpu(self) -> wgpu::BindingType {
+        match self {
+            BindingType::UniformBuffer => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            BindingType::StorageBufferRead => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            BindingType::StorageBufferReadWrite => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            BindingType::SampledTexture2d => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            BindingType::SampledTextureDepth2d => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            BindingType::StorageTexture2dWrite { format } => wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: format.to_wgpu(),
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            BindingType::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            BindingType::SamplerComparison => {
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)
+            }
+        }
+    }
+}
+
+/// Bind-group layout descriptor. Pre-A.2b only declared the label; A.2b
+/// adds the `entries` list so explicit layouts (the ADR-075 long-term
+/// path) can replace the auto-derive bootstrap pass-by-pass.
+#[derive(Clone, Debug)]
 pub struct BindGroupLayoutDesc<'a> {
     /// Debug label.
     pub label: &'a str,
+    /// Layout entries. An empty slice produces an empty layout (the
+    /// pre-A.2b behaviour); populated entries declare the explicit
+    /// (binding, visibility, type) triples the shader expects.
+    pub entries: &'a [BindGroupLayoutEntry],
 }
 
 /// Owned bind-group layout.
 #[derive(Clone, Debug)]
 pub struct BindGroupLayout {
-    raw: Arc<wgpu::BindGroupLayout>,
+    pub(crate) raw: Arc<wgpu::BindGroupLayout>,
 }
 
 impl BindGroupLayout {
-    /// Create an empty bind-group layout. PR 3+ will accept full entry
-    /// lists; PR 2 only needs the empty layout to construct PipelineLayout.
+    /// Create a bind-group layout from a [`BindGroupLayoutDesc`].
     pub fn new(device: &Device, desc: &BindGroupLayoutDesc<'_>) -> Self {
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = desc
+            .entries
+            .iter()
+            .map(|e| wgpu::BindGroupLayoutEntry {
+                binding: e.binding,
+                visibility: e.visibility.to_wgpu(),
+                ty: e.ty.to_wgpu(),
+                count: None,
+            })
+            .collect();
         let raw = device
             .raw()
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some(desc.label),
-                entries: &[],
+                entries: &entries,
             });
         Self { raw: Arc::new(raw) }
     }
 
-    fn raw(&self) -> &wgpu::BindGroupLayout {
+    pub(crate) fn raw(&self) -> &wgpu::BindGroupLayout {
+        &self.raw
+    }
+}
+
+/// Reference to a GPU resource a [`BindGroupEntry`] binds.
+#[derive(Clone, Copy, Debug)]
+pub enum BindingResource<'a> {
+    /// Entire buffer (offset = 0, size = full).
+    Buffer(&'a Buffer),
+    /// Sub-range of a buffer.
+    BufferSlice {
+        /// Buffer to bind.
+        buffer: &'a Buffer,
+        /// Byte offset.
+        offset: u64,
+        /// Binding size in bytes.
+        size: u64,
+    },
+    /// Texture view (sampled or storage texture).
+    TextureView(&'a TextureView<'a>),
+    /// Sampler.
+    Sampler(&'a Sampler),
+}
+
+/// One entry in a [`BindGroupDesc`]. The `binding` value must match the
+/// `@group(N) @binding(M)` declaration in the WGSL source the bound
+/// pipeline uses.
+#[derive(Clone, Copy, Debug)]
+pub struct BindGroupEntry<'a> {
+    /// Binding index inside the group.
+    pub binding: u32,
+    /// Resource the binding references.
+    pub resource: BindingResource<'a>,
+}
+
+/// Bind-group descriptor.
+#[derive(Clone, Debug)]
+pub struct BindGroupDesc<'a> {
+    /// Debug label.
+    pub label: &'a str,
+    /// Layout this bind group is compatible with. Pass the layout
+    /// returned by [`crate::ComputePipeline::bind_group_layout`] /
+    /// [`crate::RenderPipeline::bind_group_layout`] when using the
+    /// auto-derive bootstrap (Phase 5.5 A.2a), or a hand-authored layout
+    /// from [`BindGroupLayout::new`] when explicit layouts (ADR-075
+    /// A.2c) land per-pass.
+    pub layout: &'a BindGroupLayout,
+    /// Per-binding resource references.
+    pub entries: &'a [BindGroupEntry<'a>],
+}
+
+/// Owned bind group — a concrete `(layout, resources)` binding the
+/// compute / render pass references via `set_bind_group`.
+#[derive(Clone, Debug)]
+pub struct BindGroup {
+    raw: Arc<wgpu::BindGroup>,
+}
+
+impl BindGroup {
+    /// Construct a bind group against a layout. The entries must cover
+    /// every binding the layout declares; wgpu validation enforces the
+    /// match at creation time.
+    pub fn new(device: &Device, desc: &BindGroupDesc<'_>) -> Self {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = desc
+            .entries
+            .iter()
+            .map(|e| wgpu::BindGroupEntry {
+                binding: e.binding,
+                resource: match e.resource {
+                    BindingResource::Buffer(b) => b.raw().as_entire_binding(),
+                    BindingResource::BufferSlice {
+                        buffer,
+                        offset,
+                        size,
+                    } => wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: buffer.raw(),
+                        offset,
+                        size: core::num::NonZeroU64::new(size),
+                    }),
+                    BindingResource::TextureView(v) => wgpu::BindingResource::TextureView(v.raw()),
+                    BindingResource::Sampler(s) => wgpu::BindingResource::Sampler(s.raw()),
+                },
+            })
+            .collect();
+        let raw = device.raw().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(desc.label),
+            layout: desc.layout.raw(),
+            entries: &entries,
+        });
+        Self { raw: Arc::new(raw) }
+    }
+
+    pub(crate) fn raw(&self) -> &wgpu::BindGroup {
         &self.raw
     }
 }

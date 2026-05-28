@@ -1,13 +1,100 @@
 //! Command-encoder + render-pass + compute-pass wrappers.
 //!
-//! PR 2's pass surface is intentionally narrow: enough verbs that PR 3's
-//! deferred geometry pass and the rasterizer testbed's GPU backend can
-//! record real work, no more. New verbs land alongside their consumer.
+//! Phase 5.5 A.2b extends the surface with MRT + depth attachments,
+//! `set_bind_group`, `set_push_constants`, and `draw_indexed_indirect`
+//! so the Track-A passes can record real GPU work.
 
 use crate::buffer::Buffer;
 use crate::device::Device;
-use crate::pipeline::{ComputePipeline, RenderPipeline};
+use crate::pipeline::{BindGroup, ComputePipeline, RenderPipeline};
 use crate::texture::TextureView;
+
+/// RGBA clear value for a [`RenderPassColorAttachment`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Color {
+    /// Red component (linear).
+    pub r: f64,
+    /// Green component (linear).
+    pub g: f64,
+    /// Blue component (linear).
+    pub b: f64,
+    /// Alpha component.
+    pub a: f64,
+}
+
+impl Color {
+    /// Opaque black.
+    pub const BLACK: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    /// Fully transparent.
+    pub const TRANSPARENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+
+    /// Construct from r/g/b/a components.
+    pub const fn new(r: f64, g: f64, b: f64, a: f64) -> Self {
+        Self { r, g, b, a }
+    }
+}
+
+/// Color-attachment load operation.
+#[derive(Clone, Copy, Debug)]
+pub enum LoadOp {
+    /// Clear the attachment to the given color before the pass begins.
+    Clear(Color),
+    /// Preserve the existing attachment contents.
+    Load,
+}
+
+/// Depth-attachment load operation.
+#[derive(Clone, Copy, Debug)]
+pub enum DepthLoadOp {
+    /// Clear depth to the given value (reverse-Z uses `0.0` at the far
+    /// plane; conventional Z uses `1.0`).
+    Clear(f32),
+    /// Preserve the existing depth contents.
+    Load,
+}
+
+/// One color attachment in a [`RenderPassDesc`].
+#[derive(Clone, Debug)]
+pub struct RenderPassColorAttachment<'a> {
+    /// Color target view.
+    pub view: &'a TextureView<'a>,
+    /// Load operation.
+    pub load: LoadOp,
+    /// `true` to keep the result after the pass; `false` discards.
+    pub store: bool,
+}
+
+/// Depth attachment in a [`RenderPassDesc`].
+#[derive(Clone, Debug)]
+pub struct RenderPassDepthAttachment<'a> {
+    /// Depth target view.
+    pub view: &'a TextureView<'a>,
+    /// Load operation.
+    pub load: DepthLoadOp,
+    /// `true` to keep the result after the pass; `false` discards.
+    pub store: bool,
+}
+
+/// Multi-target render-pass descriptor.
+#[derive(Clone, Debug)]
+pub struct RenderPassDesc<'a> {
+    /// Trace label.
+    pub label: &'a str,
+    /// Color attachments (1..=8 typically). Empty for depth-only passes.
+    pub color_attachments: &'a [RenderPassColorAttachment<'a>],
+    /// Optional depth attachment.
+    pub depth: Option<RenderPassDepthAttachment<'a>>,
+}
 
 /// Owned command encoder.
 ///
@@ -28,7 +115,8 @@ impl CommandEncoder {
     }
 
     /// Begin a colour-only render pass. The single attachment is cleared to
-    /// `clear` and stored. PR 3+ widens the descriptor to MRT.
+    /// `clear` and stored. Shortcut for the most common case;
+    /// [`Self::begin_render_pass_desc`] is the MRT + depth surface.
     pub fn begin_render_pass<'a>(
         &'a mut self,
         label: &'a str,
@@ -52,6 +140,64 @@ impl CommandEncoder {
                 },
             })],
             depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        RenderPass { raw }
+    }
+
+    /// Begin a multi-target render pass with optional depth attachment.
+    pub fn begin_render_pass_desc<'a>(&'a mut self, desc: &RenderPassDesc<'a>) -> RenderPass<'a> {
+        let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = desc
+            .color_attachments
+            .iter()
+            .map(|a| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view: a.view.raw(),
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: match a.load {
+                            LoadOp::Clear(c) => wgpu::LoadOp::Clear(wgpu::Color {
+                                r: c.r,
+                                g: c.g,
+                                b: c.b,
+                                a: c.a,
+                            }),
+                            LoadOp::Load => wgpu::LoadOp::Load,
+                        },
+                        store: if a.store {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
+                    },
+                })
+            })
+            .collect();
+        let depth_stencil_attachment =
+            desc.depth
+                .as_ref()
+                .map(|d| wgpu::RenderPassDepthStencilAttachment {
+                    view: d.view.raw(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: match d.load {
+                            DepthLoadOp::Clear(v) => wgpu::LoadOp::Clear(v),
+                            DepthLoadOp::Load => wgpu::LoadOp::Load,
+                        },
+                        store: if d.store {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
+                    }),
+                    stencil_ops: None,
+                });
+        let raw = self.raw.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(desc.label),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
@@ -104,6 +250,22 @@ impl RenderPass<'_> {
         self.raw.set_pipeline(pipeline.raw());
     }
 
+    /// Bind a bind group to slot `slot`. Dynamic offsets are not yet
+    /// surfaced — Phase 5.5 passes use static offsets only.
+    pub fn set_bind_group(&mut self, slot: u32, bind_group: &BindGroup) {
+        self.raw.set_bind_group(slot, bind_group.raw(), &[]);
+    }
+
+    /// Write `bytes` into the pipeline's immediate (push-constant) data
+    /// at the given byte offset. Stage visibility is baked into the
+    /// pipeline layout's immediate range (wgpu 29 dropped per-call
+    /// stage flags). ADR-044 keeps the engine method name
+    /// `set_push_constants` for spec stability; wgpu 29 calls the
+    /// primitive `set_immediates`.
+    pub fn set_push_constants(&mut self, offset: u32, bytes: &[u8]) {
+        self.raw.set_immediates(offset, bytes);
+    }
+
     /// Bind a vertex buffer to slot `slot`.
     pub fn set_vertex_buffer(&mut self, slot: u32, buffer: &Buffer) {
         self.raw.set_vertex_buffer(slot, buffer.raw().slice(..));
@@ -129,6 +291,14 @@ impl RenderPass<'_> {
     ) {
         self.raw.draw_indexed(indices, base_vertex, instances);
     }
+
+    /// Issue a single indirect indexed draw — the GPU reads the
+    /// `DrawIndexedIndirect { index_count, instance_count, first_index,
+    /// base_vertex, first_instance }` argument struct from the buffer
+    /// at the given offset. The `CullPass` produces this argument buffer.
+    pub fn draw_indexed_indirect(&mut self, buffer: &Buffer, offset: u64) {
+        self.raw.draw_indexed_indirect(buffer.raw(), offset);
+    }
 }
 
 impl core::fmt::Debug for RenderPass<'_> {
@@ -146,6 +316,19 @@ impl ComputePass<'_> {
     /// Bind a compute pipeline.
     pub fn set_pipeline(&mut self, pipeline: &ComputePipeline) {
         self.raw.set_pipeline(pipeline.raw());
+    }
+
+    /// Bind a bind group to slot `slot`.
+    pub fn set_bind_group(&mut self, slot: u32, bind_group: &BindGroup) {
+        self.raw.set_bind_group(slot, bind_group.raw(), &[]);
+    }
+
+    /// Write `bytes` into the pipeline's immediate (push-constant) data
+    /// at the given byte offset. ADR-044 keeps the engine method name
+    /// `set_push_constants` for spec stability; wgpu 29 calls the
+    /// primitive `set_immediates`.
+    pub fn set_push_constants(&mut self, offset: u32, bytes: &[u8]) {
+        self.raw.set_immediates(offset, bytes);
     }
 
     /// Dispatch `groups` workgroups.

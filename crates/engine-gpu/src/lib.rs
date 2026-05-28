@@ -61,13 +61,17 @@ pub use bindless::{
 };
 pub use buffer::{Buffer, BufferDesc, BufferUsage};
 pub use device::{Device, DeviceFeatures, DeviceLimits, Queue};
-pub use encoder::{CommandEncoder, ComputePass, RenderPass, SubmitToken};
+pub use encoder::{
+    Color, CommandEncoder, ComputePass, DepthLoadOp, LoadOp, RenderPass, RenderPassColorAttachment,
+    RenderPassDepthAttachment, RenderPassDesc, SubmitToken,
+};
 pub use error::GpuError;
 pub use pipeline::{
-    BindGroupLayout, BindGroupLayoutDesc, ColorTargetState, ComputePipeline, ComputePipelineDesc,
-    DepthStencilState, FragmentState, PipelineLayout, PipelineLayoutDesc, RenderPipeline,
-    RenderPipelineDesc, ShaderModule, ShaderModuleDesc, ShaderStage, VertexAttribute,
-    VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
+    BindGroup, BindGroupDesc, BindGroupEntry, BindGroupLayout, BindGroupLayoutDesc,
+    BindGroupLayoutEntry, BindingResource, BindingType, ColorTargetState, ComputePipeline,
+    ComputePipelineDesc, DepthStencilState, FragmentState, PipelineLayout, PipelineLayoutDesc,
+    RenderPipeline, RenderPipelineDesc, ShaderModule, ShaderModuleDesc, ShaderStage,
+    VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
 };
 pub use sampler::{AddressMode, FilterMode, Sampler, SamplerDesc};
 pub use swapchain::{PresentMode, Swapchain, SwapchainConfig, SwapchainTexture};
