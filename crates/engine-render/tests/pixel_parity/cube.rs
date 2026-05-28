@@ -22,8 +22,40 @@
 //! chain's per-pass numerical accumulation differs from the CPU oracle
 //! in ways that require per-pass tightening across subsequent slices
 //! (ADR-046's per-fixture exception process is the documented path).
-//! Following slices in the A.3 sequence will narrow the gap until the
-//! verdict tightens.
+//!
+//! ## Known parity gaps surfaced by Slice 4 diagnostic
+//!
+//! The Slice 4 diagnostic (per-region pixel counters + top-5 worst
+//! pixels) on the developer's RX 580 shows the GPU output is currently
+//! fully black (`gpu-lit only = 0`, `both-lit = 0`). Investigating
+//! surfaced three engine-side issues that subsequent slices need to
+//! address before the verdict tightens:
+//!
+//! 1. **`ClusterUniforms` WGSL std140 padding gap.** The struct's
+//!    `light_count : u32` lives at offset 64 + 4 = 68, but the next
+//!    field `grid_dim : vec3<u32>` needs 16-byte alignment per WGSL
+//!    spec — so `grid_dim` lands at offset 80, not 68. The cluster
+//!    cube fixture's `cluster_uniforms()` writer (this file) currently
+//!    skips the 12-byte gap; the resulting cluster grid dimensions are
+//!    read as garbage by `cluster_assign.wgsl`, so per-cell light
+//!    lookup in `lighting.wgsl` returns the wrong cell.
+//! 2. **Lighting shader treats every light as a point light.**
+//!    `lighting.wgsl:171` does `to_light = light.position_radius.xyz -
+//!    world_pos`, ignoring `light.direction.xyz` + the `params.w`
+//!    light-type tag. A directional light written with `position_radius
+//!    = (0,0,0,0)` and `direction = (sun direction)` produces
+//!    `to_light = -world_pos`, which gives a position-derived BRDF
+//!    input rather than the documented light direction.
+//! 3. **Lighting shader early-exit on depth = 0.** `lighting.wgsl:142`
+//!    short-circuits with black when `depth <= 0.0` ("reverse-Z far =
+//!    sky"). If GBufferPass doesn't actually rasterise the cube — which
+//!    today's investigation suggests is happening — the depth buffer
+//!    stays at the clear value (reverse-Z 0.0), the lighting shader
+//!    returns black for every pixel, and the tonemap output is fully
+//!    black.
+//!
+//! Slice 5+ will close each gap. The cube fixture's parity assertion
+//! tightens correspondingly.
 
 use engine_gpu::{Buffer, COPY_BYTES_PER_ROW_ALIGNMENT, CommandEncoder};
 use engine_math::Mat4;
@@ -32,8 +64,9 @@ use engine_render::{GpuFrameContext, ResourceId, ResourceResolver, TransientReso
 
 use super::harness::{
     ParityHarness, Pool, RID_BLOOM_UBO, RID_CLUSTER_UBO, RID_CSM_UBO, RID_DRAW_COUNT_SSBO,
-    RID_GBUFFER_FRAME_UBO, RID_IBL_UBO, RID_INDEX_BUF, RID_INDIRECT, RID_INSTANCES_SSBO,
-    RID_LIGHTING_FRAME_UBO, RID_LIGHTS, RID_SSAO_UBO, RID_TAA_UBO, RID_TONEMAP_UBO, RID_VERTEX_BUF,
+    RID_FRUSTUM_UBO, RID_GBUFFER_FRAME_UBO, RID_IBL_UBO, RID_INDEX_BUF, RID_INSTANCES_SSBO,
+    RID_LIGHTING_FRAME_UBO, RID_LIGHTS, RID_MESHES_SSBO, RID_RENDER_QUEUE, RID_SSAO_UBO,
+    RID_TAA_UBO, RID_TONEMAP_UBO, RID_VERTEX_BUF,
 };
 
 fn buffer_for(table: &TransientResourceTable, id: ResourceId) -> &Buffer {
@@ -465,25 +498,64 @@ fn cube_index_buffer() -> Vec<u8> {
     buf
 }
 
-/// `DrawIndexedIndirect` arg + the count buffer's leading u32.
-/// CullPass would normally produce these; the cube fixture bypasses
-/// CullPass's compute output and seeds the values directly so GBuffer
-/// + CsmShadow consume a known one-cube workload.
-fn indirect_draw_args() -> Vec<u8> {
-    let mut buf = Vec::with_capacity(20);
-    push_u32(&mut buf, 36); // index_count
-    push_u32(&mut buf, 1); // instance_count
-    push_u32(&mut buf, 0); // first_index
-    push_u32(&mut buf, 0); // base_vertex
-    push_u32(&mut buf, 0); // first_instance
-    debug_assert_eq!(buf.len(), 20);
+/// One `InstanceEntry` (cull.wgsl:17) — 32 B AABB + 4 × u32 = 48 B.
+/// Drives the CullPass's per-instance frustum test.
+fn cull_instance_entry(scene: &CubeParityScene) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(48);
+    // Aabb: 3×f32 min + 4 B pad + 3×f32 max + 4 B pad = 32 B.
+    push_f32(&mut buf, scene.cube_aabb.min.x);
+    push_f32(&mut buf, scene.cube_aabb.min.y);
+    push_f32(&mut buf, scene.cube_aabb.min.z);
+    push_f32(&mut buf, 0.0); // pad0
+    push_f32(&mut buf, scene.cube_aabb.max.x);
+    push_f32(&mut buf, scene.cube_aabb.max.y);
+    push_f32(&mut buf, scene.cube_aabb.max.z);
+    push_f32(&mut buf, 0.0); // pad1
+    push_u32(&mut buf, 0); // mesh_index
+    push_u32(&mut buf, 0); // material_index
+    push_u32(&mut buf, 0); // instance_id
+    push_u32(&mut buf, 0); // flags
+    debug_assert_eq!(buf.len(), 48);
     buf
 }
 
-fn indirect_draw_count() -> Vec<u8> {
-    let mut buf = Vec::with_capacity(4);
-    push_u32(&mut buf, 1);
+/// One `MeshEntry` (cull.wgsl:34) — 4 × u32 = 16 B. Tells the cull
+/// shader the cube's index range so the produced `DrawIndirect` has a
+/// non-zero `index_count`. Without this seed, every cull-survivor
+/// indirect arg has `index_count = 0` and GBufferPass draws nothing.
+fn cull_mesh_entry() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(16);
+    push_u32(&mut buf, 36); // index_count (cube = 6 × 2 × 3)
+    push_u32(&mut buf, 0); // first_index
+    push_u32(&mut buf, 0); // base_vertex (i32; 0 fits)
+    push_u32(&mut buf, 0); // flags
+    debug_assert_eq!(buf.len(), 16);
     buf
+}
+
+/// 6 frustum planes packed as `vec4<f32>` (xyz = normal, w = signed
+/// distance) — extracted from the camera's view-projection matrix via
+/// `Frustum::from_view_projection`. The cull shader reads this UBO at
+/// `@group(0) @binding(0)`.
+fn frustum_uniform(scene: &CubeParityScene) -> Vec<u8> {
+    let frustum = engine_raster::Frustum::from_view_projection(scene.camera.view_projection());
+    let mut buf = Vec::with_capacity(96);
+    for plane in frustum.planes.iter() {
+        push_f32(&mut buf, plane.normal.x);
+        push_f32(&mut buf, plane.normal.y);
+        push_f32(&mut buf, plane.normal.z);
+        push_f32(&mut buf, plane.d);
+    }
+    debug_assert_eq!(buf.len(), 96);
+    buf
+}
+
+/// Zero the draw-count atomic. CullPass uses `atomicAdd(count, 1)` to
+/// claim slots in the indirect-draws SSBO; if the count buffer doesn't
+/// start at zero, surviving instances get appended past the end of the
+/// indirect-args SSBO.
+fn zero_draw_count() -> Vec<u8> {
+    vec![0u8; 16]
 }
 
 // =============================================================================
@@ -551,6 +623,64 @@ fn cube_parity() {
         cmp.mean_delta,
     );
 
+    // Per-region diagnostic — split pixels into (CPU lit?, GPU lit?)
+    // quadrants so the parity-gap shape is visible without a PNG dump.
+    let (mut cpu_black_gpu_black, mut cpu_black_gpu_lit, mut cpu_lit_gpu_black, mut both_lit) =
+        (0u64, 0u64, 0u64, 0u64);
+    struct WorstPixel {
+        x: u32,
+        y: u32,
+        cpu: [u8; 3],
+        gpu: [u8; 3],
+        max_delta: f32,
+    }
+    let mut worst: Vec<WorstPixel> = Vec::new();
+    for y in 0..cpu_fb.height() {
+        for x in 0..cpu_fb.width() {
+            let c = cpu_fb.sample(x, y);
+            let g = gpu_fb.sample(x, y);
+            let cpu_dark = c.r == 0 && c.g == 0 && c.b == 0;
+            let gpu_dark = g.r == 0 && g.g == 0 && g.b == 0;
+            match (cpu_dark, gpu_dark) {
+                (true, true) => cpu_black_gpu_black += 1,
+                (true, false) => cpu_black_gpu_lit += 1,
+                (false, true) => cpu_lit_gpu_black += 1,
+                (false, false) => both_lit += 1,
+            }
+            // Track the 5 worst-offending pixels for inspection.
+            let dr = (c.r as i32 - g.r as i32).abs() as f32 / 255.0;
+            let dg = (c.g as i32 - g.g as i32).abs() as f32 / 255.0;
+            let db = (c.b as i32 - g.b as i32).abs() as f32 / 255.0;
+            let pixel_max = dr.max(dg).max(db);
+            let candidate = WorstPixel {
+                x,
+                y,
+                cpu: [c.r, c.g, c.b],
+                gpu: [g.r, g.g, g.b],
+                max_delta: pixel_max,
+            };
+            if worst.len() < 5 {
+                worst.push(candidate);
+                worst.sort_by(|a, b| b.max_delta.partial_cmp(&a.max_delta).unwrap());
+            } else if pixel_max > worst.last().unwrap().max_delta {
+                worst.pop();
+                worst.push(candidate);
+                worst.sort_by(|a, b| b.max_delta.partial_cmp(&a.max_delta).unwrap());
+            }
+        }
+    }
+    eprintln!(
+        "[parity.cube] regions: both-black {} | cpu-lit only {} | gpu-lit only {} | both-lit {}",
+        cpu_black_gpu_black, cpu_lit_gpu_black, cpu_black_gpu_lit, both_lit,
+    );
+    eprintln!("[parity.cube] worst pixels (sRGB byte deltas, top 5):");
+    for w in &worst {
+        eprintln!(
+            "  ({:3}, {:2}): cpu=({:3},{:3},{:3})  gpu=({:3},{:3},{:3})  pix_max={:.3}",
+            w.x, w.y, w.cpu[0], w.cpu[1], w.cpu[2], w.gpu[0], w.gpu[1], w.gpu[2], w.max_delta,
+        );
+    }
+
     // Slice 3 ships the comparison path itself. Strict
     // `OracleVerdict::Pass` will land as later slices tighten per-pass
     // numerical agreement (per ADR-046's per-fixture exception process).
@@ -591,12 +721,25 @@ fn seed_scene(harness: &ParityHarness, pool: &Pool, scene: &CubeParityScene) {
     queue.write_buffer(buffer_for(table, RID_VERTEX_BUF), 0, &vertex_bytes);
     queue.write_buffer(buffer_for(table, RID_INDEX_BUF), 0, &index_bytes);
 
-    // Indirect draw args + count (bypass CullPass; seed the post-cull state).
-    queue.write_buffer(buffer_for(table, RID_INDIRECT), 0, &indirect_draw_args());
+    // CullPass inputs — the pass overwrites RID_INDIRECT + RID_DRAW_COUNT_SSBO
+    // from these every frame.
+    queue.write_buffer(
+        buffer_for(table, RID_RENDER_QUEUE),
+        0,
+        &cull_instance_entry(scene),
+    );
+    queue.write_buffer(buffer_for(table, RID_MESHES_SSBO), 0, &cull_mesh_entry());
+    queue.write_buffer(
+        buffer_for(table, RID_FRUSTUM_UBO),
+        0,
+        &frustum_uniform(scene),
+    );
+    // Reset the draw-count atomic to 0 — CullPass appends with atomicAdd
+    // and pre-existing values would shift slots past the SSBO end.
     queue.write_buffer(
         buffer_for(table, RID_DRAW_COUNT_SSBO),
         0,
-        &indirect_draw_count(),
+        &zero_draw_count(),
     );
 
     // Instance — the cube's affine + material index.
