@@ -53,6 +53,18 @@ pub const BLOOM_WGSL: &str = include_str!("../shaders/bloom.wgsl");
 /// TonemapPass ACES filmic.
 pub const TONEMAP_WGSL: &str = include_str!("../shaders/tonemap.wgsl");
 
+/// SplatSort radix-by-depth compute kernel (Phase 6 PR 2, ADR-077 §3).
+/// Three entry points: `cs_init` projects positions to camera-space
+/// depth keys; `cs_count` accumulates the per-pass 8-bit digit bins
+/// via atomicAdd; `cs_scatter` performs the stable partition.
+pub const SPLAT_SORT_WGSL: &str = include_str!("../shaders/splat_sort.wgsl");
+
+/// SplatComposite back-to-front 2D-Gaussian alpha-blend (Phase 6 PR 2,
+/// ADR-077 §4). Vertex stage emits a billboard quad per instance from
+/// the sorted permutation; fragment stage evaluates the 2D Gaussian +
+/// the 9-coefficient L=2 SH appearance.
+pub const SPLAT_COMPOSITE_WGSL: &str = include_str!("../shaders/splat_composite.wgsl");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +183,40 @@ mod tests {
         assert_contains(BLOOM_WGSL, "fn cs_extract", "bloom.wgsl");
         assert_contains(BLOOM_WGSL, "fn cs_downsample", "bloom.wgsl");
         assert_contains(BLOOM_WGSL, "fn cs_upsample", "bloom.wgsl");
+    }
+
+    #[test]
+    fn splat_sort_shader_has_three_radix_entry_points() {
+        assert_contains(SPLAT_SORT_WGSL, "@compute", "splat_sort.wgsl");
+        assert_contains(SPLAT_SORT_WGSL, "fn cs_init", "splat_sort.wgsl");
+        assert_contains(SPLAT_SORT_WGSL, "fn cs_count", "splat_sort.wgsl");
+        assert_contains(SPLAT_SORT_WGSL, "fn cs_scatter", "splat_sort.wgsl");
+        // Polaris-compat: no subgroup intrinsics, no f16 types.
+        assert!(
+            !SPLAT_SORT_WGSL.contains("subgroupShuffle")
+                && !SPLAT_SORT_WGSL.contains("subgroupBallot")
+                && !SPLAT_SORT_WGSL.contains("subgroupBroadcast"),
+            "splat_sort.wgsl: no subgroup intrinsics permitted"
+        );
+        assert!(
+            !SPLAT_SORT_WGSL.contains(": f16")
+                && !SPLAT_SORT_WGSL.contains("vec2<f16>")
+                && !SPLAT_SORT_WGSL.contains("vec3<f16>")
+                && !SPLAT_SORT_WGSL.contains("vec4<f16>"),
+            "splat_sort.wgsl: pure f32 only"
+        );
+    }
+
+    #[test]
+    fn splat_composite_shader_has_billboard_quad_and_sh() {
+        assert_contains(SPLAT_COMPOSITE_WGSL, "@vertex", "splat_composite.wgsl");
+        assert_contains(SPLAT_COMPOSITE_WGSL, "@fragment", "splat_composite.wgsl");
+        assert_contains(
+            SPLAT_COMPOSITE_WGSL,
+            "evaluate_sh",
+            "splat_composite.wgsl",
+        );
+        assert_contains(SPLAT_COMPOSITE_WGSL, "QUAD_VERTS", "splat_composite.wgsl");
     }
 
     #[test]
