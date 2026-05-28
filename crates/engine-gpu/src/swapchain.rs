@@ -8,7 +8,7 @@
 
 use crate::device::Device;
 use crate::error::GpuError;
-use crate::texture::{TextureFormat, TextureView};
+use crate::texture::{Extent3d, TextureFormat, TextureView};
 
 /// Vsync / present-mode choice. Mirrors `wgpu::PresentMode` semantically
 /// — the renderer uses [`PresentMode::Mailbox`] when it's available
@@ -139,6 +139,8 @@ impl Swapchain {
         Ok(SwapchainTexture {
             inner: Some(frame),
             view,
+            extent: Extent3d::new_2d(self.config.width, self.config.height),
+            format: self.config.format,
         })
     }
 }
@@ -159,12 +161,14 @@ impl core::fmt::Debug for Swapchain {
 pub struct SwapchainTexture {
     inner: Option<wgpu::SurfaceTexture>,
     view: wgpu::TextureView,
+    extent: Extent3d,
+    format: TextureFormat,
 }
 
 impl SwapchainTexture {
     /// Borrow the view to record passes against.
     pub fn view(&self) -> TextureView<'_> {
-        TextureView::from_raw(&self.view)
+        TextureView::from_raw(&self.view, self.extent, self.format)
     }
 
     /// Present the backbuffer.

@@ -338,6 +338,8 @@ impl Texture {
     pub fn default_view(&self) -> TextureView<'_> {
         TextureView {
             raw: &self.default_view,
+            extent: self.extent,
+            format: self.format,
         }
     }
 
@@ -355,11 +357,16 @@ impl Texture {
 /// Borrowed texture view. Returned by [`Texture::default_view`].
 ///
 /// PR 2 keeps the view surface narrow: passes consume a `TextureView<'a>` as
-/// render-target / sampled-texture binding. Custom subresource views land
-/// alongside their consumer in PR 3+.
+/// render-target / sampled-texture binding. Phase 5.5 A.2b-ii adds
+/// [`Self::extent`] + [`Self::format`] accessors so dispatch-count
+/// derivation in compute-pass `record()` bodies can read the
+/// underlying texture's dimensions without a separate resolver
+/// round-trip (ADR-075 §1 Step 5).
 #[derive(Debug, Clone, Copy)]
 pub struct TextureView<'a> {
     raw: &'a wgpu::TextureView,
+    extent: Extent3d,
+    format: TextureFormat,
 }
 
 impl<'a> TextureView<'a> {
@@ -369,9 +376,31 @@ impl<'a> TextureView<'a> {
     }
 
     /// Crate-internal constructor used by the swapchain to wrap its
-    /// per-frame surface view.
-    pub(crate) fn from_raw(raw: &'a wgpu::TextureView) -> Self {
-        Self { raw }
+    /// per-frame surface view. The swapchain knows the extent +
+    /// format because it negotiated them at config time.
+    pub(crate) fn from_raw(
+        raw: &'a wgpu::TextureView,
+        extent: Extent3d,
+        format: TextureFormat,
+    ) -> Self {
+        Self {
+            raw,
+            extent,
+            format,
+        }
+    }
+
+    /// Underlying texture's full extent. Compute passes derive their
+    /// dispatch counts from this (`Extent3d.width / WORKGROUP_X`,
+    /// etc.). For the swapchain view this is the configured swapchain
+    /// extent.
+    pub fn extent(&self) -> Extent3d {
+        self.extent
+    }
+
+    /// Underlying texture's format.
+    pub fn format(&self) -> TextureFormat {
+        self.format
     }
 }
 

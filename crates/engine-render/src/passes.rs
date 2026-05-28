@@ -50,10 +50,30 @@
 //! resource pool doesn't yet resolve.
 
 use engine_gpu::{
-    ColorTargetState, ComputePipeline, DepthStencilState, Device, RenderPipeline, VertexAttribute,
-    VertexBufferLayout, VertexFormat, VertexStepMode,
+    BindGroup, BindGroupDesc, BindGroupEntry, BindingResource, ColorTargetState, ComputePipeline,
+    DepthStencilState, Device, RenderPipeline, VertexAttribute, VertexBufferLayout, VertexFormat,
+    VertexStepMode,
 };
 use engine_shader::Stage;
+
+/// Byte size of the `InstanceEntry` SSBO record consumed by the cull
+/// shader (`shaders/cull.wgsl`). Mirrors the WGSL `struct InstanceEntry`
+/// layout: 32 B AABB + 4 × u32 = 48 bytes. CullPass derives its
+/// dispatch count from `instances_buffer.size() / INSTANCE_ENTRY_SIZE`.
+/// Keep in sync with the shader; a discrepancy is silently a wrong
+/// dispatch count (over-dispatch is OK; under-dispatch silently culls
+/// instances).
+const INSTANCE_ENTRY_SIZE: u64 = 48;
+
+/// Helper: extract `(width, height)` from a [`engine_gpu::TextureView`]
+/// for dispatch-count derivation in screen-space compute passes.
+/// The `TextureView`'s extent comes from the underlying [`Texture`]
+/// (Phase 5.5 A.2b-ii widened `TextureView` to carry the extent +
+/// format). Passes use this to compute `dim.div_ceil(workgroup_size)`.
+fn dispatch_dim_for_view(view: &engine_gpu::TextureView<'_>) -> (u32, u32) {
+    let e = view.extent();
+    (e.width, e.height)
+}
 
 /// Interleaved mesh-vertex layout (position + normal + tangent + uv0) —
 /// the EMSH binary format's `MeshVertex` struct. ADR-061 §1 pins the
@@ -92,6 +112,7 @@ fn mesh_vertex_buffer_layout() -> [VertexBufferLayout<'static>; 1] {
     }]
 }
 
+use crate::contracts;
 use crate::contracts::{
     DEPTH_BUFFER_FORMAT, GBUFFER_ALBEDO_ROUGHNESS_FORMAT, GBUFFER_MOTION_DEPTH_FORMAT,
     GBUFFER_NORMAL_METALLIC_FORMAT, LIT_COLOR_FORMAT,
@@ -310,19 +331,39 @@ pub(crate) fn build_tonemap_pipeline(device: &Device) -> Result<ComputePipeline,
 /// path; the occlusion query feedback channel is a Phase 6+ follow-up.
 #[derive(Debug)]
 pub struct CullPass {
-    /// Graph handle for the input render queue.
+    /// Graph handle for the per-frame instance SSBO
+    /// (`shaders/cull.wgsl` `@group(0) @binding(1)`).
     pub render_queue: ResourceId,
-    /// Graph handle for the output indirect-draw buffer.
+    /// Graph handle for the output indirect-draw SSBO
+    /// (`@group(0) @binding(3)`).
     pub indirect_draws: ResourceId,
+    /// Graph handle for the per-frame frustum UBO
+    /// (`@group(0) @binding(0)`).
+    pub frustum_uniforms: ResourceId,
+    /// Graph handle for the static mesh table SSBO
+    /// (`@group(0) @binding(2)`).
+    pub meshes: ResourceId,
+    /// Graph handle for the draw-count atomic SSBO
+    /// (`@group(0) @binding(4)`).
+    pub draw_count: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
 impl CullPass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(render_queue: ResourceId, indirect_draws: ResourceId) -> Self {
+    pub fn new(
+        render_queue: ResourceId,
+        indirect_draws: ResourceId,
+        frustum_uniforms: ResourceId,
+        meshes: ResourceId,
+        draw_count: ResourceId,
+    ) -> Self {
         Self {
             render_queue,
             indirect_draws,
+            frustum_uniforms,
+            meshes,
+            draw_count,
             pipeline: None,
         }
     }
@@ -346,18 +387,81 @@ impl Pass for CullPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // Step 1: CPU-oracle short-circuit (ADR-075 §1).
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
+        // Step 2: pipeline-installed short-circuit.
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        // Step 3: resolver short-circuit (graph used in CPU-only mode).
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        // Step 4: resolve all bindings against `shaders/cull.wgsl`'s
+        //         `@group(0)` declarations. Short-circuit on first
+        //         missing — the renderer is in mid-build.
+        let Some(frustum) = resources.resolve_buffer(self.frustum_uniforms) else {
+            return;
+        };
+        let Some(instances) = resources.resolve_buffer(self.render_queue) else {
+            return;
+        };
+        let Some(meshes) = resources.resolve_buffer(self.meshes) else {
+            return;
+        };
+        let Some(draws) = resources.resolve_buffer(self.indirect_draws) else {
+            return;
+        };
+        let Some(draw_count) = resources.resolve_buffer(self.draw_count) else {
+            return;
+        };
+        let layout = pipeline.bind_group_layout(0);
+        let bind_group = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "cull.bindgroup",
+                layout: &layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(frustum),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Buffer(instances),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Buffer(meshes),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::Buffer(draws),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Buffer(draw_count),
+                    },
+                ],
+            },
+        );
+        // Step 5: open the pass scope, bind, dispatch. The shader's
+        //         (64, 1, 1) workgroup processes one instance per
+        //         thread; the dispatch count is
+        //         ceil(instance_count / CULL_WORKGROUP_SIZE.x).
+        //         Instance count derives from the SSBO size — the
+        //         shader's `if (idx >= arrayLength(...)) return;`
+        //         absorbs over-dispatch from rounding.
+        let instance_count = (instances.size() / INSTANCE_ENTRY_SIZE).max(1) as u32;
+        let dispatch_x = instance_count.div_ceil(contracts::CULL_WORKGROUP_SIZE[0]);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch — PR 8 wires the instance count
-        // from the RenderQueue resource and divides by
-        // `contracts::CULL_WORKGROUP_SIZE[0]`.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(0, &bind_group);
+        cpass.dispatch_workgroups(dispatch_x, 1, 1);
+        // Step 6: end-of-scope drops `cpass`; the encoder is owned by
+        //         `RenderGraph::execute` and submitted once per frame.
     }
 }
 
@@ -420,19 +524,34 @@ impl Pass for CsmShadowPass {
 /// each (ADR-043 §4); each workgroup walks the 24-slice depth column.
 #[derive(Debug)]
 pub struct ClusterLightPass {
-    /// Per-light SSBO (input).
+    /// Per-light SSBO (input, `@group(1) @binding(1)`).
     pub lights: ResourceId,
-    /// Cluster-cell SSBO (output).
+    /// Cluster-cell SSBO (output, `@group(1) @binding(2)`).
     pub cluster_cells: ResourceId,
+    /// Cluster UBO (`@group(1) @binding(0)`).
+    pub cluster_uniforms: ResourceId,
+    /// Light-indices SSBO (`@group(1) @binding(3)`).
+    pub light_indices: ResourceId,
+    /// Atomic indices-cursor SSBO (`@group(1) @binding(4)`).
+    pub indices_cursor: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
 impl ClusterLightPass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(lights: ResourceId, cluster_cells: ResourceId) -> Self {
+    pub fn new(
+        lights: ResourceId,
+        cluster_cells: ResourceId,
+        cluster_uniforms: ResourceId,
+        light_indices: ResourceId,
+        indices_cursor: ResourceId,
+    ) -> Self {
         Self {
             lights,
             cluster_cells,
+            cluster_uniforms,
+            light_indices,
+            indices_cursor,
             pipeline: None,
         }
     }
@@ -456,18 +575,71 @@ impl Pass for ClusterLightPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(cluster) = resources.resolve_buffer(self.cluster_uniforms) else {
+            return;
+        };
+        let Some(lights) = resources.resolve_buffer(self.lights) else {
+            return;
+        };
+        let Some(cells) = resources.resolve_buffer(self.cluster_cells) else {
+            return;
+        };
+        let Some(indices) = resources.resolve_buffer(self.light_indices) else {
+            return;
+        };
+        let Some(cursor) = resources.resolve_buffer(self.indices_cursor) else {
+            return;
+        };
+        // Cluster-assign uses `@group(1)`, not `@group(0)` — the
+        // auto-derived layout reflects the WGSL declaration. Auto-
+        // derive may emit a sparse layout array; querying set 1
+        // returns the right one.
+        let layout = pipeline.bind_group_layout(1);
+        let bind_group = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "light.cluster.bindgroup",
+                layout: &layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(cluster),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Buffer(lights),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Buffer(cells),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::Buffer(indices),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Buffer(cursor),
+                    },
+                ],
+            },
+        );
+        // Shader workgroup is (16, 9, 1) — matches the X+Y cluster
+        // grid dimensions exactly. One workgroup covers the whole
+        // XY plane; the inner loop walks Z. Dispatch is (1, 1, 1).
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch — workgroup size is
-        // `contracts::CLUSTER_ASSIGN_WORKGROUP_SIZE`. PR 8 supplies
-        // the cluster-grid dispatch counts from the
-        // `ClusterUniforms.grid_dim` setup.
+        cpass.set_bind_group(1, &bind_group);
         cpass.dispatch_workgroups(1, 1, 1);
     }
 }
@@ -637,12 +809,15 @@ impl Pass for LightingAccumulationPass {
 #[derive(Debug)]
 pub struct SsaoPass {
     /// View-space depth (read from the G-buffer or the hardware
-    /// attachment).
+    /// attachment) — `@group(2) @binding(1)` (depth texture).
     pub depth: ResourceId,
-    /// G-buffer normals (RG channels carry the octahedral normal).
+    /// G-buffer normals — `@group(2) @binding(0)`.
     pub gbuffer_normal_metallic: ResourceId,
-    /// Single-channel occlusion output.
+    /// Single-channel occlusion output (storage texture,
+    /// `@group(2) @binding(2)`).
     pub ssao_target: ResourceId,
+    /// SSAO uniforms UBO (`@group(1) @binding(0)`).
+    pub ssao_uniforms: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
@@ -652,11 +827,13 @@ impl SsaoPass {
         depth: ResourceId,
         gbuffer_normal_metallic: ResourceId,
         ssao_target: ResourceId,
+        ssao_uniforms: ResourceId,
     ) -> Self {
         Self {
             depth,
             gbuffer_normal_metallic,
             ssao_target,
+            ssao_uniforms,
             pipeline: None,
         }
     }
@@ -681,18 +858,72 @@ impl Pass for SsaoPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(ssao_uniforms) = resources.resolve_buffer(self.ssao_uniforms) else {
+            return;
+        };
+        let Some(gbuf_n) = resources.resolve_view(self.gbuffer_normal_metallic) else {
+            return;
+        };
+        let Some(depth) = resources.resolve_view(self.depth) else {
+            return;
+        };
+        let Some(ssao_out) = resources.resolve_view(self.ssao_target) else {
+            return;
+        };
+        let layout_uniforms = pipeline.bind_group_layout(1);
+        let layout_textures = pipeline.bind_group_layout(2);
+        let bg_uniforms = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.ssao.bindgroup.1",
+                layout: &layout_uniforms,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(ssao_uniforms),
+                }],
+            },
+        );
+        let bg_textures = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.ssao.bindgroup.2",
+                layout: &layout_textures,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&gbuf_n),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&depth),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&ssao_out),
+                    },
+                ],
+            },
+        );
+        // Workgroup (8, 8, 1); dispatch over the storage-texture
+        // extent. The SSAO target is half-resolution per
+        // `contracts::SSAO_RESOLUTION_DIVISOR`; the texture's actual
+        // dimensions drive the dispatch.
+        let dim = dispatch_dim_for_view(&ssao_out);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch — workgroup size is (8,8,1);
-        // PR 8 supplies (half-res-width / 8, half-res-height / 8, 1)
-        // per `contracts::SSAO_RESOLUTION_DIVISOR`.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(1, &bg_uniforms);
+        cpass.set_bind_group(2, &bg_textures);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -705,23 +936,29 @@ impl Pass for SsaoPass {
 /// target with the IBL contribution.
 #[derive(Debug)]
 pub struct IblPass {
-    /// L2 SH probe set buffer.
+    /// L2 SH probe set buffer (`@group(1) @binding(1)`).
     pub probes: ResourceId,
-    /// 512×512 Karis split-sum BRDF LUT.
+    /// 512×512 Karis split-sum BRDF LUT (`@group(2) @binding(3)`).
     pub brdf_lut: ResourceId,
-    /// G-buffer albedo + roughness.
+    /// G-buffer albedo + roughness (`@group(2) @binding(0)`).
     pub gbuffer_albedo_roughness: ResourceId,
-    /// G-buffer normal + metallic.
+    /// G-buffer normal + metallic (`@group(2) @binding(1)`).
     pub gbuffer_normal_metallic: ResourceId,
-    /// Hardware depth (used to reconstruct world-space position).
+    /// Hardware depth (`@group(2) @binding(2)`).
     pub depth: ResourceId,
-    /// HDR linear-space output (pre-direct-light target).
+    /// HDR linear-space output (storage texture,
+    /// `@group(2) @binding(5)`).
     pub lit_color: ResourceId,
+    /// IBL uniforms UBO (`@group(1) @binding(0)`).
+    pub ibl_uniforms: ResourceId,
+    /// BRDF LUT sampler (`@group(2) @binding(4)`).
+    pub brdf_sampler: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
 impl IblPass {
     /// Construct with the resource handles the graph builder produced.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         probes: ResourceId,
         brdf_lut: ResourceId,
@@ -729,6 +966,8 @@ impl IblPass {
         gbuffer_normal_metallic: ResourceId,
         depth: ResourceId,
         lit_color: ResourceId,
+        ibl_uniforms: ResourceId,
+        brdf_sampler: ResourceId,
     ) -> Self {
         Self {
             probes,
@@ -737,6 +976,8 @@ impl IblPass {
             gbuffer_normal_metallic,
             depth,
             lit_color,
+            ibl_uniforms,
+            brdf_sampler,
             pipeline: None,
         }
     }
@@ -764,17 +1005,98 @@ impl Pass for IblPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(ibl_u) = resources.resolve_buffer(self.ibl_uniforms) else {
+            return;
+        };
+        let Some(probes) = resources.resolve_buffer(self.probes) else {
+            return;
+        };
+        let Some(albedo) = resources.resolve_view(self.gbuffer_albedo_roughness) else {
+            return;
+        };
+        let Some(normal) = resources.resolve_view(self.gbuffer_normal_metallic) else {
+            return;
+        };
+        let Some(depth) = resources.resolve_view(self.depth) else {
+            return;
+        };
+        let Some(brdf_lut) = resources.resolve_view(self.brdf_lut) else {
+            return;
+        };
+        let Some(sampler) = resources.resolve_sampler(self.brdf_sampler) else {
+            return;
+        };
+        let Some(out) = resources.resolve_view(self.lit_color) else {
+            return;
+        };
+        let layout_u = pipeline.bind_group_layout(1);
+        let layout_tex = pipeline.bind_group_layout(2);
+        let bg_u = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.ibl.bindgroup.1",
+                layout: &layout_u,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(ibl_u),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Buffer(probes),
+                    },
+                ],
+            },
+        );
+        let bg_tex = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "draw.opaque.ibl.bindgroup.2",
+                layout: &layout_tex,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&albedo),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&normal),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&depth),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(&brdf_lut),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: BindingResource::TextureView(&out),
+                    },
+                ],
+            },
+        );
+        let dim = dispatch_dim_for_view(&out);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch — PR 8 supplies the screen
-        // tile count derived from the output target size.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(1, &bg_u);
+        cpass.set_bind_group(2, &bg_tex);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -785,23 +1107,37 @@ impl Pass for IblPass {
 /// TAA accumulation + history (ADR-042).
 #[derive(Debug)]
 pub struct TaaPass {
-    /// Current-frame HDR colour (lighting accumulation output).
+    /// Current-frame HDR colour (lighting accumulation output),
+    /// `@group(2) @binding(0)` (`current_color`).
     pub lit_color: ResourceId,
-    /// Previous-frame TAA history.
+    /// Previous-frame TAA history, `@group(2) @binding(2)`.
     pub history: ResourceId,
-    /// Motion + view-z attachment from the G-buffer pass.
+    /// Motion + view-z attachment from the G-buffer pass,
+    /// `@group(2) @binding(3)`.
     pub gbuffer_motion_depth: ResourceId,
-    /// Hardware depth (used by the disocclusion mask).
+    /// Hardware depth (NOT bound today — the TAA shader reads depth
+    /// from `gbuffer_motion_depth.z`; the field is retained to keep
+    /// the graph-flow declaration honest for the upcoming disocclusion
+    /// mask refinement).
     pub depth: ResourceId,
-    /// TAA-resolved HDR target (also the canonical upscaler input).
+    /// TAA-resolved HDR target (also the canonical upscaler input),
+    /// `@group(2) @binding(5)`.
     pub resolved: ResourceId,
-    /// Next-frame history slot the pool ping-pongs into.
+    /// Next-frame history slot the pool ping-pongs into,
+    /// `@group(2) @binding(6)`.
     pub history_next: ResourceId,
+    /// IBL contribution input, `@group(2) @binding(1)`.
+    pub ibl_contribution: ResourceId,
+    /// TAA uniforms UBO, `@group(1) @binding(0)`.
+    pub taa_uniforms: ResourceId,
+    /// Linear sampler (`@group(2) @binding(4)`).
+    pub linear_sampler: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
 impl TaaPass {
     /// Construct with the resource handles the graph builder produced.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         lit_color: ResourceId,
         history: ResourceId,
@@ -809,6 +1145,9 @@ impl TaaPass {
         depth: ResourceId,
         resolved: ResourceId,
         history_next: ResourceId,
+        ibl_contribution: ResourceId,
+        taa_uniforms: ResourceId,
+        linear_sampler: ResourceId,
     ) -> Self {
         Self {
             lit_color,
@@ -817,6 +1156,9 @@ impl TaaPass {
             depth,
             resolved,
             history_next,
+            ibl_contribution,
+            taa_uniforms,
+            linear_sampler,
             pipeline: None,
         }
     }
@@ -844,18 +1186,96 @@ impl Pass for TaaPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(taa_u) = resources.resolve_buffer(self.taa_uniforms) else {
+            return;
+        };
+        let Some(curr) = resources.resolve_view(self.lit_color) else {
+            return;
+        };
+        let Some(ibl) = resources.resolve_view(self.ibl_contribution) else {
+            return;
+        };
+        let Some(hist) = resources.resolve_view(self.history) else {
+            return;
+        };
+        let Some(motion) = resources.resolve_view(self.gbuffer_motion_depth) else {
+            return;
+        };
+        let Some(sampler) = resources.resolve_sampler(self.linear_sampler) else {
+            return;
+        };
+        let Some(resolved_out) = resources.resolve_view(self.resolved) else {
+            return;
+        };
+        let Some(hist_out) = resources.resolve_view(self.history_next) else {
+            return;
+        };
+        let layout_u = pipeline.bind_group_layout(1);
+        let layout_tex = pipeline.bind_group_layout(2);
+        let bg_u = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.taa.bindgroup.1",
+                layout: &layout_u,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(taa_u),
+                }],
+            },
+        );
+        let bg_tex = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.taa.bindgroup.2",
+                layout: &layout_tex,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&curr),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&ibl),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&hist),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(&motion),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: BindingResource::TextureView(&resolved_out),
+                    },
+                    BindGroupEntry {
+                        binding: 6,
+                        resource: BindingResource::TextureView(&hist_out),
+                    },
+                ],
+            },
+        );
+        let dim = dispatch_dim_for_view(&resolved_out);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch. PR 8 supplies the screen-tile
-        // count + the jitter uniform via
-        // `engine_raster::post_fx::jitter_for_frame(ctx.frame_idx)`.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(1, &bg_u);
+        cpass.set_bind_group(2, &bg_tex);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -866,12 +1286,26 @@ impl Pass for TaaPass {
 /// Bloom extract + blur (PR 4). Reads the TAA-resolved HDR target;
 /// writes the low-frequency bright-pass layer for the tonemap pass to
 /// composite.
+///
+/// Phase 5.5 A.2b-ii wires the **extract** dispatch only. The
+/// downsample + upsample mip chain (per ADR-065 §5 / 5 mip levels) is
+/// A.2c scope — it requires per-mip transient texture allocation that
+/// the foundation transient pool doesn't yet sequence (each mip is a
+/// distinct view of the same texture, or a separate texture). Pixel
+/// parity for the bloom kernel (Jimenez 2014 dual-filter Kawase vs.
+/// CPU oracle `gaussian_blur_3x3`) is absorbed by ADR-046's 1/255
+/// channel tolerance, so the extract-only path is functional but not
+/// quality-final until A.2c.
 #[derive(Debug)]
 pub struct BloomPass {
-    /// TAA-resolved HDR input.
+    /// TAA-resolved HDR input (`@group(2) @binding(0)`).
     pub resolved: ResourceId,
-    /// Bloom layer output.
+    /// Bloom layer output (storage texture, `@group(2) @binding(2)`).
     pub bloom_target: ResourceId,
+    /// Bloom uniforms UBO (`@group(1) @binding(0)`).
+    pub bloom_uniforms: ResourceId,
+    /// Linear sampler (`@group(2) @binding(1)`).
+    pub linear_sampler: ResourceId,
     pipeline_extract: Option<ComputePipeline>,
     pipeline_downsample: Option<ComputePipeline>,
     pipeline_upsample: Option<ComputePipeline>,
@@ -879,10 +1313,17 @@ pub struct BloomPass {
 
 impl BloomPass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(resolved: ResourceId, bloom_target: ResourceId) -> Self {
+    pub fn new(
+        resolved: ResourceId,
+        bloom_target: ResourceId,
+        bloom_uniforms: ResourceId,
+        linear_sampler: ResourceId,
+    ) -> Self {
         Self {
             resolved,
             bloom_target,
+            bloom_uniforms,
+            linear_sampler,
             pipeline_extract: None,
             pipeline_downsample: None,
             pipeline_upsample: None,
@@ -906,27 +1347,77 @@ impl Pass for BloomPass {
     fn install_pipeline(&mut self, device: &Device) -> Result<(), ShaderError> {
         // BloomPass owns three pipelines (extract → downsample → upsample
         // per ADR-065 §5, 5 mip levels = `contracts::BLOOM_MIP_LEVELS`).
-        // PR 8 chains the downsample + upsample dispatches across the mip
-        // chain; the GPU kernel is a Jimenez-2014 dual-filter Kawase blur,
-        // and ADR-046's 1/255 channel + p99 ≤ 1% tolerance absorbs the
-        // kernel-shape difference vs the CPU oracle's `gaussian_blur_3x3`.
+        // A.2b-ii wires the extract dispatch; A.2c chains the
+        // downsample + upsample dispatches across the mip chain.
         self.pipeline_extract = Some(build_bloom_extract_pipeline(device)?);
         self.pipeline_downsample = Some(build_bloom_downsample_pipeline(device)?);
         self.pipeline_upsample = Some(build_bloom_upsample_pipeline(device)?);
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template (extract dispatch only;
+        // downsample + upsample chain lands in A.2c).
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(extract) = self.pipeline_extract.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(bloom_u) = resources.resolve_buffer(self.bloom_uniforms) else {
+            return;
+        };
+        let Some(src) = resources.resolve_view(self.resolved) else {
+            return;
+        };
+        let Some(sampler) = resources.resolve_sampler(self.linear_sampler) else {
+            return;
+        };
+        let Some(dst) = resources.resolve_view(self.bloom_target) else {
+            return;
+        };
+        let layout_u = extract.bind_group_layout(1);
+        let layout_tex = extract.bind_group_layout(2);
+        let bg_u = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.bloom.extract.bindgroup.1",
+                layout: &layout_u,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(bloom_u),
+                }],
+            },
+        );
+        let bg_tex = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.bloom.extract.bindgroup.2",
+                layout: &layout_tex,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&src),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&dst),
+                    },
+                ],
+            },
+        );
+        let dim = dispatch_dim_for_view(&dst);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(extract);
-        // PR 7: placeholder extract dispatch. PR 8 chains
-        // downsample + upsample dispatches across the mip chain.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(1, &bg_u);
+        cpass.set_bind_group(2, &bg_tex);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -988,22 +1479,34 @@ impl Pass for UpscalePass {
 /// bloom layer; writes the final LDR target (`TonemappedColor`).
 #[derive(Debug)]
 pub struct TonemapPass {
-    /// TAA-resolved HDR input.
+    /// TAA-resolved HDR input (`@group(2) @binding(0)`).
     pub resolved: ResourceId,
-    /// Bloom layer.
+    /// Bloom layer (`@group(2) @binding(1)`).
     pub bloom: ResourceId,
-    /// LDR output.
+    /// LDR output (storage texture, `@group(2) @binding(3)`).
     pub tonemapped: ResourceId,
+    /// Tonemap uniforms UBO (`@group(1) @binding(0)`).
+    pub tonemap_uniforms: ResourceId,
+    /// Linear sampler (`@group(2) @binding(2)`).
+    pub linear_sampler: ResourceId,
     pipeline: Option<ComputePipeline>,
 }
 
 impl TonemapPass {
     /// Construct with the resource handles the graph builder produced.
-    pub fn new(resolved: ResourceId, bloom: ResourceId, tonemapped: ResourceId) -> Self {
+    pub fn new(
+        resolved: ResourceId,
+        bloom: ResourceId,
+        tonemapped: ResourceId,
+        tonemap_uniforms: ResourceId,
+        linear_sampler: ResourceId,
+    ) -> Self {
         Self {
             resolved,
             bloom,
             tonemapped,
+            tonemap_uniforms,
+            linear_sampler,
             pipeline: None,
         }
     }
@@ -1028,17 +1531,75 @@ impl Pass for TonemapPass {
         Ok(())
     }
     fn record(&mut self, ctx: &mut PassContext) {
+        // ADR-075 §1 — six-step template.
         let Some(gpu) = ctx.gpu.as_mut() else {
             return;
         };
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;
         };
+        let Some(resources) = ctx.resources else {
+            return;
+        };
+        let Some(tonemap_u) = resources.resolve_buffer(self.tonemap_uniforms) else {
+            return;
+        };
+        let Some(scene) = resources.resolve_view(self.resolved) else {
+            return;
+        };
+        let Some(bloom) = resources.resolve_view(self.bloom) else {
+            return;
+        };
+        let Some(sampler) = resources.resolve_sampler(self.linear_sampler) else {
+            return;
+        };
+        let Some(dst) = resources.resolve_view(self.tonemapped) else {
+            return;
+        };
+        let layout_u = pipeline.bind_group_layout(1);
+        let layout_tex = pipeline.bind_group_layout(2);
+        let bg_u = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.tonemap.bindgroup.1",
+                layout: &layout_u,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(tonemap_u),
+                }],
+            },
+        );
+        let bg_tex = BindGroup::new(
+            gpu.device,
+            &BindGroupDesc {
+                label: "post.fx.tonemap.bindgroup.2",
+                layout: &layout_tex,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&scene),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&bloom),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(&dst),
+                    },
+                ],
+            },
+        );
+        let dim = dispatch_dim_for_view(&dst);
         let mut cpass = gpu.encoder.begin_compute_pass(self.name());
         cpass.set_pipeline(pipeline);
-        // PR 7: placeholder dispatch. PR 8 wires the LDR output tile
-        // count + the ACES exposure / bloom-mix uniforms.
-        cpass.dispatch_workgroups(1, 1, 1);
+        cpass.set_bind_group(1, &bg_u);
+        cpass.set_bind_group(2, &bg_tex);
+        cpass.dispatch_workgroups(dim.0.div_ceil(8), dim.1.div_ceil(8), 1);
     }
 }
 
@@ -1063,10 +1624,33 @@ mod tests {
         let gbuf_md = ResourceId(8);
         let depth = ResourceId(9);
         let lit = ResourceId(10);
+        // Auxiliary non-graph-flow bindings (UBOs, samplers, secondary
+        // SSBOs). These don't participate in topology — they're
+        // per-pass uniform state the resolver provides at execute
+        // time. Scheduling tests never resolve them, so the test only
+        // needs distinct stable ResourceIds here.
+        let frustum_ubo = ResourceId(50);
+        let meshes_ssbo = ResourceId(51);
+        let draw_count_ssbo = ResourceId(52);
+        let cluster_ubo = ResourceId(53);
+        let light_indices_ssbo = ResourceId(54);
+        let indices_cursor_ssbo = ResourceId(55);
 
-        g.add_pass(CullPass::new(queue, indirect));
+        g.add_pass(CullPass::new(
+            queue,
+            indirect,
+            frustum_ubo,
+            meshes_ssbo,
+            draw_count_ssbo,
+        ));
         g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
-        g.add_pass(ClusterLightPass::new(lights, cluster_cells));
+        g.add_pass(ClusterLightPass::new(
+            lights,
+            cluster_cells,
+            cluster_ubo,
+            light_indices_ssbo,
+            indices_cursor_ssbo,
+        ));
         g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
@@ -1117,13 +1701,51 @@ mod tests {
         let taa_resolved = ResourceId(16);
         let bloom = ResourceId(17);
         let tonemapped = ResourceId(18);
+        // Auxiliary non-graph-flow bindings (UBOs, samplers, secondary
+        // SSBOs / storage textures). Distinct stable ids for the
+        // scheduling test; never resolved against a real resolver.
+        let frustum_ubo = ResourceId(50);
+        let meshes_ssbo = ResourceId(51);
+        let draw_count_ssbo = ResourceId(52);
+        let cluster_ubo = ResourceId(53);
+        let light_indices_ssbo = ResourceId(54);
+        let indices_cursor_ssbo = ResourceId(55);
+        let ssao_ubo = ResourceId(56);
 
-        g.add_pass(CullPass::new(queue, indirect));
+        g.add_pass(CullPass::new(
+            queue,
+            indirect,
+            frustum_ubo,
+            meshes_ssbo,
+            draw_count_ssbo,
+        ));
         g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
-        g.add_pass(ClusterLightPass::new(lights, cluster_cells));
+        g.add_pass(ClusterLightPass::new(
+            lights,
+            cluster_cells,
+            cluster_ubo,
+            light_indices_ssbo,
+            indices_cursor_ssbo,
+        ));
         g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
-        g.add_pass(SsaoPass::new(depth, gbuf_nm, ssao));
-        g.add_pass(IblPass::new(probes, brdf_lut, gbuf_ar, gbuf_nm, depth, lit));
+        g.add_pass(SsaoPass::new(depth, gbuf_nm, ssao, ssao_ubo));
+        // Auxiliary IDs for IBL / TAA / Bloom / Tonemap bindings.
+        let ibl_ubo = ResourceId(57);
+        let brdf_sampler = ResourceId(58);
+        let taa_ubo = ResourceId(59);
+        let linear_sampler = ResourceId(60);
+        let bloom_ubo = ResourceId(61);
+        let tonemap_ubo = ResourceId(62);
+        g.add_pass(IblPass::new(
+            probes,
+            brdf_lut,
+            gbuf_ar,
+            gbuf_nm,
+            depth,
+            lit,
+            ibl_ubo,
+            brdf_sampler,
+        ));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
             gbuf_nm,
@@ -1141,9 +1763,23 @@ mod tests {
             depth,
             taa_resolved,
             taa_history_next,
+            lit,
+            taa_ubo,
+            linear_sampler,
         ));
-        g.add_pass(BloomPass::new(taa_resolved, bloom));
-        g.add_pass(TonemapPass::new(taa_resolved, bloom, tonemapped));
+        g.add_pass(BloomPass::new(
+            taa_resolved,
+            bloom,
+            bloom_ubo,
+            linear_sampler,
+        ));
+        g.add_pass(TonemapPass::new(
+            taa_resolved,
+            bloom,
+            tonemapped,
+            tonemap_ubo,
+            linear_sampler,
+        ));
         let n = g.compile().expect("graph compiles");
         assert_eq!(n, 10);
         let names = g.scheduled_names().unwrap();
@@ -1187,10 +1823,28 @@ mod tests {
         let upscaled = ResourceId(14);
         let bloom = ResourceId(15);
         let tonemapped = ResourceId(16);
+        let frustum_ubo = ResourceId(50);
+        let meshes_ssbo = ResourceId(51);
+        let draw_count_ssbo = ResourceId(52);
+        let cluster_ubo = ResourceId(53);
+        let light_indices_ssbo = ResourceId(54);
+        let indices_cursor_ssbo = ResourceId(55);
 
-        g.add_pass(CullPass::new(queue, indirect));
+        g.add_pass(CullPass::new(
+            queue,
+            indirect,
+            frustum_ubo,
+            meshes_ssbo,
+            draw_count_ssbo,
+        ));
         g.add_pass(CsmShadowPass::new(casters, shadow_atlas));
-        g.add_pass(ClusterLightPass::new(lights, cluster_cells));
+        g.add_pass(ClusterLightPass::new(
+            lights,
+            cluster_cells,
+            cluster_ubo,
+            light_indices_ssbo,
+            indices_cursor_ssbo,
+        ));
         g.add_pass(GBufferPass::new(indirect, gbuf_ar, gbuf_nm, gbuf_md, depth));
         g.add_pass(LightingAccumulationPass::new(
             gbuf_ar,
@@ -1202,6 +1856,10 @@ mod tests {
             shadow_atlas,
             lit,
         ));
+        let taa_ubo = ResourceId(59);
+        let linear_sampler = ResourceId(60);
+        let bloom_ubo = ResourceId(61);
+        let tonemap_ubo = ResourceId(62);
         g.add_pass(TaaPass::new(
             lit,
             taa_history_prev,
@@ -1209,10 +1867,24 @@ mod tests {
             depth,
             taa_resolved,
             taa_history_next,
+            lit,
+            taa_ubo,
+            linear_sampler,
         ));
         g.add_pass(UpscalePass::new(taa_resolved, upscaled));
-        g.add_pass(BloomPass::new(taa_resolved, bloom));
-        g.add_pass(TonemapPass::new(upscaled, bloom, tonemapped));
+        g.add_pass(BloomPass::new(
+            taa_resolved,
+            bloom,
+            bloom_ubo,
+            linear_sampler,
+        ));
+        g.add_pass(TonemapPass::new(
+            upscaled,
+            bloom,
+            tonemapped,
+            tonemap_ubo,
+            linear_sampler,
+        ));
 
         let n = g.compile().expect("graph compiles");
         assert_eq!(n, 9);
