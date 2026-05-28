@@ -7,7 +7,7 @@
 use crate::buffer::Buffer;
 use crate::device::Device;
 use crate::pipeline::{BindGroup, ComputePipeline, RenderPipeline};
-use crate::texture::TextureView;
+use crate::texture::{Texture, TextureView};
 
 /// RGBA clear value for a [`RenderPassColorAttachment`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -226,6 +226,51 @@ impl CommandEncoder {
     ) {
         self.raw
             .copy_buffer_to_buffer(src.raw(), src_offset, dst.raw(), dst_offset, size);
+    }
+
+    /// Copy the mip-0 base-layer footprint of `src` into `dst` starting at
+    /// byte offset 0. Symmetric with [`crate::Queue::write_texture_2d`]:
+    /// uploads write into the texture; this method downloads back out.
+    ///
+    /// `bytes_per_row` must align with [`crate::COPY_BYTES_PER_ROW_ALIGNMENT`]
+    /// (256 on native backends). For an `Rgba8` / `Bgra8` texture of width
+    /// `W`, the row pitch is `((W * 4 + 255) / 256) * 256`; the buffer must
+    /// be sized for at least `bytes_per_row * rows_per_image` bytes. Callers
+    /// are responsible for unpacking the padded rows on the host side after
+    /// [`Buffer::read_back`] returns.
+    ///
+    /// `src` must have been created with [`crate::TextureUsage::COPY_SRC`];
+    /// `dst` with [`crate::BufferUsage::COPY_DST`] (and typically
+    /// `MAP_READ` for readback).
+    pub fn copy_texture_to_buffer(
+        &mut self,
+        src: &Texture,
+        dst: &Buffer,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) {
+        let extent = src.extent();
+        self.raw.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: src.raw(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: dst.raw(),
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(rows_per_image),
+                },
+            },
+            wgpu::Extent3d {
+                width: extent.width,
+                height: extent.height,
+                depth_or_array_layers: extent.depth_or_array_layers,
+            },
+        );
     }
 
     /// Consume the encoder, returning the underlying `wgpu::CommandBuffer`.

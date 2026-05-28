@@ -55,6 +55,13 @@ pub mod texture;
 
 mod runtime;
 
+/// Required row-pitch alignment for `copy_texture_to_buffer` / `write_texture`
+/// on native backends. Vulkan / D3D12 / Metal all impose a 256-byte boundary;
+/// wgpu surfaces it via `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`. Re-exported here
+/// so callers compute padded row strides without naming `wgpu::*` directly
+/// (ADR-049 boundary).
+pub const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+
 pub use bindless::{
     BindlessHeap, BindlessHeapConfig, BindlessHeapStats, BindlessSamplerId, BindlessTextureId,
     FALLBACK_TEXTURE_SLOT, HeapFull, MAGENTA_FALLBACK_GENERATION,
