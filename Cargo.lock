@@ -511,6 +511,9 @@ dependencies = [
 [[package]]
 name = "engine-editor"
 version = "0.0.0"
+dependencies = [
+ "engine-ui",
+]
 
 [[package]]
 name = "engine-gpu"

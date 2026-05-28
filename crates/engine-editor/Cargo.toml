@@ -6,3 +6,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The editor's panel chrome is themed from engine-ui (tokens-driven palette).
+engine-ui.workspace = true

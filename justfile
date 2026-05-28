@@ -34,6 +34,14 @@ gen-golden:
     ENGINE_GOLDEN_WRITE=1 cargo test -p engine-math --test determinism
     ENGINE_GOLDEN_WRITE=1 cargo test -p engine-core --test determinism
 
+# Regenerate the engine-ui design palette (crates/engine-ui/src/theme/palette.rs)
+# from the workstation design tokens. ~/.dotfiles/system/tokens.toml is the
+# single source of truth shared with Waybar / Niri / Neovim; re-run after any
+# tokens change, then commit the regenerated palette.
+gen-palette:
+    "$HOME/.dotfiles/bin/.local/bin/render-engine-palette"
+    cargo fmt -p engine-ui
+
 # Run the workspace benchmarks (Phase 1 arena benches). Not part of `ci` —
 # bench numbers are too runner-noisy to gate on, but we keep them runnable.
 bench:
